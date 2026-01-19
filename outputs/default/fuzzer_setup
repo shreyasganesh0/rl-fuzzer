@@ -1,0 +1,6 @@
+# environment variables:
+AFL_CUSTOM_INFO_PROGRAM=bin/target_bin
+AFL_CUSTOM_INFO_PROGRAM_ARGV=
+AFL_CUSTOM_INFO_OUT=outputs/default
+# command line:
+'/opt/homebrew/Cellar/afl++/4.35c/libexec/afl-fuzz' '-i' 'inputs' '-o' 'outputs' '--' 'bin/target_bin'
