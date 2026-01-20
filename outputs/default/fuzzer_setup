@@ -1,7 +1,7 @@
 # environment variables:
-AFL_CUSTOM_MUTATOR_LIBRARY=./bin/rl_mutator.dylib
+AFL_CUSTOM_MUTATOR_LIBRARY=./bin/rl_mutator_full.dylib
 AFL_CUSTOM_INFO_PROGRAM=bin/target_bin
 AFL_CUSTOM_INFO_PROGRAM_ARGV=
 AFL_CUSTOM_INFO_OUT=outputs/default
 # command line:
-'/opt/homebrew/Cellar/afl++/4.35c/libexec/afl-fuzz' '-i' 'inputs' '-o' 'outputs' '--' 'bin/target_bin'
+'/Users/shreyas/Packages/AFLplusplus/afl-fuzz' '-i' 'inputs' '-o' 'outputs' '--' 'bin/target_bin'
