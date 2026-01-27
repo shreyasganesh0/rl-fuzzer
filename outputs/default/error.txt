@@ -1,5 +1,0 @@
-File instrumentation/afl-compiler-rt.o.c, line 1192: Error(read from AFL++ tool): Undefined error: 0
-File instrumentation/afl-compiler-rt.o.c, line 1192: Error(read from AFL++ tool): Undefined error: 0
-File instrumentation/afl-compiler-rt.o.c, line 1192: Error(read from AFL++ tool): Undefined error: 0
-File instrumentation/afl-compiler-rt.o.c, line 1192: Error(read from AFL++ tool): Undefined error: 0
-File instrumentation/afl-compiler-rt.o.c, line 1192: Error(read from AFL++ tool): Undefined error: 0

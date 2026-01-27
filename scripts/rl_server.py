@@ -1,3 +1,4 @@
+# [sysrel]
 import socket
 import struct
 import os
@@ -7,146 +8,132 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
+import csv
+import time
 
 SOCKET_PATH = "/tmp/fuzz_rl.sock"
+METRICS_FILE = "rl_metrics.csv"
+ACTION_SIZE = 10
+STATE_SIZE = 1
 BATCH_SIZE = 64
 GAMMA = 0.99
-EPS_START = 0.9
-EPS_END = 0.05
-EPS_DECAY = 1000
-LR = 1e-3
-MEMORY_SIZE = 10000
+LEARNING_RATE = 1e-3
+
+STRUCT_FMT = "IIIQ" 
+PACKET_SIZE = struct.calcsize(STRUCT_FMT)
 
 class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self):
         super(DQN, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, output_dim)
-        )
+        self.fc1 = nn.Linear(STATE_SIZE, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.out = nn.Linear(128, ACTION_SIZE)
 
     def forward(self, x):
-        return self.net(x)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        return self.out(x)
 
 class Agent:
-    def __init__(self, state_dim, action_dim):
-        self.action_dim = action_dim
+    def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        self.policy_net = DQN(state_dim, action_dim).to(self.device)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LR)
-        self.memory = deque(maxlen=MEMORY_SIZE)
-        self.steps_done = 0
-        self.loss_fn = nn.MSELoss()
+        self.model = DQN().to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
+        self.memory = deque(maxlen=10000)
+        self.epsilon = 1.0
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.9995 
 
-    def select_action(self, state):
-        # Epsilon-Greedy Strategy
-        sample = random.random()
-        eps_threshold = EPS_END + (EPS_START - EPS_END) * \
-            np.exp(-1. * self.steps_done / EPS_DECAY)
-        self.steps_done += 1
-
-        if sample > eps_threshold:
-            with torch.no_grad():
-                # State is (1, input_dim)
-                state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                q_values = self.policy_net(state_t)
-                return q_values.max(1)[1].item()
-        else:
-            return random.randrange(self.action_dim)
-
-    def remember(self, state, action, reward, next_state):
-        self.memory.append((state, action, reward, next_state))
-
-    def train_step(self):
-        if len(self.memory) < BATCH_SIZE:
-            return
-
-        batch = random.sample(self.memory, BATCH_SIZE)
-        batch_state, batch_action, batch_reward, batch_next_state = zip(*batch)
-
-        state_t = torch.FloatTensor(np.array(batch_state)).to(self.device)
-        action_t = torch.LongTensor(batch_action).unsqueeze(1).to(self.device)
-        reward_t = torch.FloatTensor(batch_reward).unsqueeze(1).to(self.device)
-        next_state_t = torch.FloatTensor(np.array(batch_next_state)).to(self.device)
-
-        # Compute Q(s, a)
-        current_q = self.policy_net(state_t).gather(1, action_t)
-
-        # Compute max Q(s', a') for target
+    def act(self, state):
+        if random.random() < self.epsilon:
+            return random.randint(0, ACTION_SIZE - 1)
         with torch.no_grad():
-            next_q = self.policy_net(next_state_t).max(1)[0].unsqueeze(1)
-            target_q = reward_t + (GAMMA * next_q)
+            return torch.argmax(self.model(torch.FloatTensor(state).to(self.device))).item()
 
-        loss = self.loss_fn(current_q, target_q)
+    def train(self):
+        if len(self.memory) < BATCH_SIZE: return 0
+        batch = random.sample(self.memory, BATCH_SIZE)
+        s, a, r, ns = zip(*batch)
+        
+        s = torch.FloatTensor(np.array(s)).to(self.device)
+        a = torch.LongTensor(a).unsqueeze(1).to(self.device)
+        r = torch.FloatTensor(r).unsqueeze(1).to(self.device)
+        ns = torch.FloatTensor(np.array(ns)).to(self.device)
 
+        q = self.model(s).gather(1, a)
+        next_q = self.model(ns).max(1)[0].unsqueeze(1)
+        target = r + (GAMMA * next_q)
+        
+        loss = nn.MSELoss()(q, target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+            
+        return loss.item()
 
-def start_server():
-    if os.path.exists(SOCKET_PATH):
-        os.remove(SOCKET_PATH)
-
+def main():
+    if os.path.exists(SOCKET_PATH): os.remove(SOCKET_PATH)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     server.listen(1)
-    
-    # Initialize Agent
-    # State: Currently just 1 number (total_execs). Ideally a vector.
-    # Actions: 3 mutators (0=Wide, 1=Magic, 2=Havoc)
-    agent = Agent(state_dim=1, action_dim=3)
-    
-    print(f"[*] DQN Brain initialized on {agent.device}")
-    print(f"[*] Listening on {SOCKET_PATH}...")
 
+    # Init CSV
+    with open(METRICS_FILE, 'w') as f:
+        f.write("step,reward,loss,epsilon,coverage,crashes\n")
+
+    print(f"[*] Brain Logic Ready on {SOCKET_PATH}")
+    agent = Agent()
     conn, _ = server.accept()
-    print("[+] AFL++ CONNECTED!")
     
+    prev_cov = 0
+    prev_crash = 0
+    step = 0
     last_state = np.array([0.0])
     last_action = 0
 
     try:
-        total_requests = 0
         while True:
-            # CHANGED: Recv 8 bytes (4 byte uint + 4 byte float)
-            data = conn.recv(8)
-            if not data: break
+            data = conn.recv(PACKET_SIZE)
+            if not data or len(data) < PACKET_SIZE: break
             
-            # 1. UNPACK REAL DATA
-            # 'I' = unsigned int (state), 'f' = float (reward)
-            val, reward = struct.unpack('<If', data)
-            current_state = np.array([float(val)])
+            _, cov, crash, execs = struct.unpack(STRUCT_FMT, data)
+            state = np.array([float(cov) / 1000.0]) # Use coverage as state for this test
 
-            # 2. LOG SIGNIFICANT REWARDS
-            if reward > 1.0:
-                print(f"[!!!] REWARD RECEIVED: {reward} (Found Path/Crash)")
-
-            # 3. STORE EXPERIENCE & TRAIN
-            if total_requests > 0:
-                agent.remember(last_state, last_action, reward, current_state)
-                agent.train_step()
-
-            # 4. DECIDE NEXT ACTION
-            action = agent.select_action(current_state)
+            # Reward Function
+            d_cov = cov - prev_cov
+            d_crash = crash - prev_crash
+            reward = (d_cov * 100) + (d_crash * 10000) - 0.1
             
-            conn.send(struct.pack('<I', action))
-            
-            last_state = current_state
+            # Train
+            loss = 0
+            if step > 0:
+                agent.memory.append((last_state, last_action, reward, state))
+                loss = agent.train()
+
+            # Act
+            action = agent.act(state)
+            conn.send(struct.pack("i", action))
+
+            # Log Metrics every 100 steps
+            if step % 100 == 0:
+                with open(METRICS_FILE, 'a') as f:
+                    f.write(f"{step},{reward:.2f},{loss:.4f},{agent.epsilon:.4f},{cov},{crash}\n")
+                print(f"Step {step}: Cov {cov} | Eps {agent.epsilon:.2f} | Act {action}")
+
+            last_state = state
             last_action = action
-            total_requests += 1
-
-            if total_requests % 1000 == 0:
-                print(f"[*] Step {total_requests}: Eps {agent.steps_done:.2f} | Last R: {reward:.2f}")
+            prev_cov = cov
+            prev_crash = crash
+            step += 1
 
     except KeyboardInterrupt:
-        print("[!] Stopping...")
+        pass
     finally:
-        conn.close()
+        server.close()
         os.remove(SOCKET_PATH)
 
 if __name__ == "__main__":
-    start_server()
+    main()
