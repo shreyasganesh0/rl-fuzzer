@@ -1,4 +1,6 @@
 # [sysrel]
+# State Vector: [Coverage, CMP_Type, Bit_Width, Is_Const, Depth, PREV_ACTION]
+
 import socket
 import struct
 import os
@@ -8,13 +10,20 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
-import csv
-import time
+import json
 
+# --- CONFIGURATION ---
 SOCKET_PATH = "/tmp/fuzz_rl.sock"
 METRICS_FILE = "rl_metrics.csv"
-ACTION_SIZE = 10
-STATE_SIZE = 1
+CONSTRAINTS_FILE = "constraints.json"
+
+# State: 
+# 1. Global Coverage (Normalized)
+# 2-5. Static Features (Type, Width, Const, Depth)
+# 6. Previous Action (Normalized)
+STATE_SIZE = 6 
+
+ACTION_SIZE = 10 
 BATCH_SIZE = 64
 GAMMA = 0.99
 LEARNING_RATE = 1e-3
@@ -22,6 +31,7 @@ LEARNING_RATE = 1e-3
 STRUCT_FMT = "IIIQ" 
 PACKET_SIZE = struct.calcsize(STRUCT_FMT)
 
+# --- DQN MODEL ---
 class DQN(nn.Module):
     def __init__(self):
         super(DQN, self).__init__()
@@ -40,91 +50,115 @@ class Agent:
         self.model = DQN().to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
         self.memory = deque(maxlen=10000)
-        self.epsilon = 1.0
+        self.epsilon = 1.0 
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.9995 
+        self.epsilon_decay = 0.995
 
     def act(self, state):
-        if random.random() < self.epsilon:
-            return random.randint(0, ACTION_SIZE - 1)
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(ACTION_SIZE)
+        
+        state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            return torch.argmax(self.model(torch.FloatTensor(state).to(self.device))).item()
+            q_values = self.model(state_t)
+        return np.argmax(q_values.cpu().data.numpy())
 
     def train(self):
         if len(self.memory) < BATCH_SIZE: return 0
-        batch = random.sample(self.memory, BATCH_SIZE)
-        s, a, r, ns = zip(*batch)
+        minibatch = random.sample(self.memory, BATCH_SIZE)
         
-        s = torch.FloatTensor(np.array(s)).to(self.device)
-        a = torch.LongTensor(a).unsqueeze(1).to(self.device)
-        r = torch.FloatTensor(r).unsqueeze(1).to(self.device)
-        ns = torch.FloatTensor(np.array(ns)).to(self.device)
+        loss_val = 0
+        for state, action, reward, next_state in minibatch:
+            state_t = torch.FloatTensor(state).to(self.device)
+            next_state_t = torch.FloatTensor(next_state).to(self.device)
+            
+            target = reward + GAMMA * torch.max(self.model(next_state_t))
+            prediction = self.model(state_t)[action]
+            
+            loss = (target - prediction) ** 2
+            loss_val += loss.item()
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
-        q = self.model(s).gather(1, a)
-        next_q = self.model(ns).max(1)[0].unsqueeze(1)
-        target = r + (GAMMA * next_q)
-        
-        loss = nn.MSELoss()(q, target)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
             
-        return loss.item()
+        return loss_val / BATCH_SIZE
+
+def load_constraints():
+    if not os.path.exists(CONSTRAINTS_FILE):
+        return {}
+    with open(CONSTRAINTS_FILE, 'r') as f:
+        return json.load(f)
 
 def main():
     if os.path.exists(SOCKET_PATH): os.remove(SOCKET_PATH)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     server.listen(1)
-
-    # Init CSV
-    with open(METRICS_FILE, 'w') as f:
-        f.write("step,reward,loss,epsilon,coverage,crashes\n")
-
-    print(f"[*] Brain Logic Ready on {SOCKET_PATH}")
+    
+    print(f"[+] Static MuoFuzz Brain listening on {SOCKET_PATH}...")
+    
     agent = Agent()
+    constraints = load_constraints()
+    
+    with open(METRICS_FILE, 'w') as f:
+        f.write("step,reward,loss,epsilon,coverage,crashes,action,input_hash\n")
+
     conn, _ = server.accept()
     
     prev_cov = 0
     prev_crash = 0
     step = 0
-    last_state = np.array([0.0])
-    last_action = 0
+    
+    last_action_taken = 0 
+    
+    last_state = np.zeros(STATE_SIZE)
 
     try:
         while True:
             data = conn.recv(PACKET_SIZE)
             if not data or len(data) < PACKET_SIZE: break
             
-            _, cov, crash, execs = struct.unpack(STRUCT_FMT, data)
-            state = np.array([float(cov) / 1000.0]) # Use coverage as state for this test
+            input_hash, cov, crash, execs = struct.unpack(STRUCT_FMT, data)
+            
+            # --- BUILD STATE ---
+            cov_feature = float(cov) / 1000.0
+            static_features = constraints.get(str(input_hash), [0.0, 0.0, 0.0, 0.0])
+            
+            # NORMALIZE PREV ACTION: Scale 0-9 to 0.0-1.0
+            action_feature = float(last_action_taken) / float(ACTION_SIZE)
+            
+            # State Vector now includes history
+            state = np.array([cov_feature] + static_features + [action_feature])
 
-            # Reward Function
+            # --- REWARD ---
             d_cov = cov - prev_cov
             d_crash = crash - prev_crash
-            reward = (d_cov * 100) + (d_crash * 10000) - 0.1
+            reward = (d_cov * 100.0) + (d_crash * 10000.0) - 0.1
             
-            # Train
+            if d_cov > 0 and sum(static_features) > 0:
+                reward += 20.0 
+
+            # --- TRAIN ---
             loss = 0
             if step > 0:
-                agent.memory.append((last_state, last_action, reward, state))
+                agent.memory.append((last_state, last_action_taken, reward, state))
                 loss = agent.train()
 
-            # Act
+            # --- ACT ---
             action = agent.act(state)
             conn.send(struct.pack("i", action))
 
-            # Log Metrics every 100 steps
             if step % 100 == 0:
                 with open(METRICS_FILE, 'a') as f:
-                    f.write(f"{step},{reward:.2f},{loss:.4f},{agent.epsilon:.4f},{cov},{crash}\n")
-                print(f"Step {step}: Cov {cov} | Eps {agent.epsilon:.2f} | Act {action}")
+                    f.write(f"{step},{reward:.2f},{loss:.4f},{agent.epsilon:.4f},{cov},{crash},{action},{input_hash}\n")
 
+            # Update Loop
             last_state = state
-            last_action = action
+            last_action_taken = action 
             prev_cov = cov
             prev_crash = crash
             step += 1
@@ -133,7 +167,7 @@ def main():
         pass
     finally:
         server.close()
-        os.remove(SOCKET_PATH)
+        if os.path.exists(SOCKET_PATH): os.remove(SOCKET_PATH)
 
 if __name__ == "__main__":
     main()

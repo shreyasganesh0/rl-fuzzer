@@ -1,54 +1,85 @@
 #!/bin/bash
 
-# --- 1. SETUP & TRAP ---
+# [sysrel]
+
+# --- 1. SETUP ---
 cleanup() {
     echo ""
     echo "[!] Stopping processes..."
     if [ ! -z "$SERVER_PID" ]; then kill -9 "$SERVER_PID" 2>/dev/null; fi
-    pkill -f rl_server.py 2>/dev/null
+    pkill -f "scripts/rl_server.py" 2>/dev/null
     pkill -f afl-fuzz 2>/dev/null
 }
 trap cleanup EXIT SIGINT SIGTERM
 
-export AFL_ROOT="$HOME/Packages/AFLplusplus"
-export AFL_PATH="$AFL_ROOT"
-export PATH="$AFL_ROOT:$PATH"
+# --- 2. CONFIGURATION ---
+# Attempt to auto-detect AFL++ location
+if [ -z "$AFL_ROOT" ]; then
+    # Common locations for AFL++
+    if [ -d "$HOME/AFLplusplus" ]; then
+        export AFL_ROOT="$HOME/AFLplusplus"
+    elif [ -d "$HOME/Packages/AFLplusplus" ]; then
+        export AFL_ROOT="$HOME/Packages/AFLplusplus"
+    elif [ -d "/usr/local/bin/afl-fuzz" ]; then
+        export AFL_ROOT="/usr/local/bin"
+    else
+        echo "[-] Error: AFL_ROOT is not set. Please export AFL_ROOT=/path/to/AFLplusplus"
+        exit 1
+    fi
+fi
 
-# Force Homebrew LLVM
+export PATH="$AFL_ROOT:$PATH"
+export AFL_PATH="$AFL_ROOT"
+
+# Force LLVM (Mac/Linux compatible)
 if [ -d "/opt/homebrew/opt/llvm/bin" ]; then
     export LLVM_BIN="/opt/homebrew/opt/llvm/bin"
 elif [ -d "/usr/local/opt/llvm/bin" ]; then
     export LLVM_BIN="/usr/local/opt/llvm/bin"
 else
-    echo "[-] Error: Could not find Homebrew LLVM."
+    export LLVM_BIN="/usr/bin"
+fi
+
+# --- 3. CLEAN & PREPARE ---
+echo "[+] Cleaning previous build..."
+mkdir -p bin inputs outputs dictionaries plots
+rm -f bin/target bin/rl_mutator.dylib rl_metrics.csv constraints.json
+rm -rf outputs/*
+
+# Create initial seed
+echo "AAAA" > inputs/seed.txt
+
+# --- CRITICAL: Create Dictionary ---
+# The RL Mutator checks if a dictionary is loaded. 
+echo '"BAD!"' > dictionaries/target.dict
+echo "[+] Created dictionary with 'BAD!' token."
+
+# --- 4. RUN MOCK STATIC ANALYSIS ---
+echo "[+] Running Mock Static Analysis..."
+if [ -f "scripts/mock_analysis.py" ]; then
+    python3 scripts/mock_analysis.py
+else
+    echo "[-] Error: scripts/mock_analysis.py not found! Run from project root."
     exit 1
 fi
 
-export AFL_CC="$LLVM_BIN/clang"
-export AFL_CXX="$LLVM_BIN/clang++"
-
-if [ ! -f "$AFL_ROOT/afl-clang-fast" ]; then
-    echo "[-] Error: afl-clang-fast not found in $AFL_ROOT."
-    exit 1
-fi
-
-# --- PRE-CLEAN ---
-mkdir -p bin inputs outputs
-rm -f bin/target bin/rl_mutator.dylib rl_metrics.csv rl_training_plot.png
-pkill -f rl_server.py
-
-# --- 2. COMPILE TARGET -> bin/target ---
-echo "[+] Compiling Target (bin/target)..."
+# --- 5. COMPILE TARGET ---
+echo "[+] Compiling Target..."
 "$AFL_ROOT/afl-clang-fast" src/target.c -o bin/target
-
 if [ ! -f bin/target ]; then
     echo "[-] Target compilation failed."
     exit 1
 fi
 
-# --- 3. COMPILE MUTATOR -> bin/rl_mutator.dylib ---
-echo "[+] Compiling Mutator (bin/rl_mutator.dylib)..."
-"$LLVM_BIN/clang" -dynamiclib -O3 -fPIC \
+# --- 6. COMPILE MUTATOR ---
+echo "[+] Compiling Custom Mutator..."
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    LIB_FLAGS="-shared"
+else
+    LIB_FLAGS="-dynamiclib -undefined dynamic_lookup"
+fi
+
+"$LLVM_BIN/clang" $LIB_FLAGS -O3 -fPIC \
     -I "$AFL_ROOT/include" \
     src/mutator.c -o bin/rl_mutator.dylib
 
@@ -57,23 +88,24 @@ if [ ! -f bin/rl_mutator.dylib ]; then
     exit 1
 fi
 
-# --- 4. START RL SERVER ---
+# --- 7. START RL SERVER ---
 echo "[+] Starting RL Brain..."
 python3 scripts/rl_server.py &
 SERVER_PID=$!
-sleep 2
+sleep 2 
 
-# --- 5. RUN FUZZER ---
-echo "[+] Starting AFL++..."
-echo "AAAA" > inputs/seed.txt
+# --- 8. START AFL++ ---
+echo "[+] Starting AFL++ with Neuro-Symbolic Mutator..."
 
-export AFL_CUSTOM_MUTATOR_LIBRARY=$(pwd)/bin/rl_mutator.dylib
+# Env Vars for Custom Mutator
+export AFL_CUSTOM_MUTATOR_LIBRARY="bin/rl_mutator.dylib"
+#export AFL_CUSTOM_MUTATOR_ONLY=1
+#export AFL_NO_UI=1
 
-"$AFL_ROOT/afl-fuzz" -i inputs -o outputs -V 60 -- ./bin/target
+"$AFL_ROOT/afl-fuzz" \
+    -i inputs \
+    -o outputs \
+    -x dictionaries/target.dict \
+    -- bin/target
 
-# --- 6. SAVE PLOTS ---
-echo ""
-echo "[+] Fuzzing finished. Generating plots..."
-python3 scripts/plot_metrics.py
-
-echo "[+] Done. Check 'rl_training_plot.png' and 'outputs/'."
+wait $SERVER_PID
