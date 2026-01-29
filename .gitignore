@@ -1,0 +1,36 @@
+# --- Compilation Artifacts (C/C++) ---
+bin/
+*.o
+*.so
+*.dylib
+*.dSYM
+*.out
+.vscode/
+
+# --- Python Artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.pytest_cache/
+
+# --- AFL++ Fuzzing Outputs ---
+outputs/
+
+# --- Runtime Data & Logs ---
+rl_metrics.csv
+constraints.json
+fuzzer_stats
+plot_data
+
+# --- Generated Dictionaries & Seeds ---
+dictionaries/target.dict
+inputs/seed.txt
+
+# --- Generated Plots ---
+plots/*.png
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
