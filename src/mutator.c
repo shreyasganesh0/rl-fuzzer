@@ -47,6 +47,20 @@ u32 djb2_hash(const u8 *str, size_t len) {
     return hash;
 }
 
+// Helper to calculate actual coverage
+u32 calculate_coverage(afl_state_t *afl) {
+    u32 count = 0;
+    u32 map_size = afl->total_bitmap_size; 
+    u8 *map = afl->virgin_bits; 
+
+    for (u32 i = 0; i < map_size; i++) {
+        if (map[i] != 0xFF) {
+            count++;
+        }
+    }
+    return count;
+}
+
 // --- INIT ---
 my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     srand(seed);
@@ -79,7 +93,7 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
     
     rl_packet_t packet;
     packet.input_hash = current_hash;
-    packet.current_cov = data->afl->total_bitmap_size;
+    packet.current_cov = calculate_coverage(data->afl); 
     packet.current_crash = data->afl->total_crashes;
     
     // FIXED: total_execs resides in the 'fsrv' struct in modern AFL++
