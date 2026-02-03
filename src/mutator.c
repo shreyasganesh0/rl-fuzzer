@@ -96,7 +96,6 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
     packet.current_cov = calculate_coverage(data->afl); 
     packet.current_crash = data->afl->total_crashes;
     
-    // FIXED: total_execs resides in the 'fsrv' struct in modern AFL++
     packet.total_execs = data->afl->fsrv.total_execs; 
 
     int action = 0; 
@@ -134,7 +133,6 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
         case 2: // INTERESTING VAL 8
             if (mut_len > 0) {
                 pos = rand() % mut_len;
-                // FIXED: Using renamed array
                 int8_t val = MY_INTERESTING_8[rand() % (sizeof(MY_INTERESTING_8)/sizeof(int32_t))];
                 data->mutated_buf[pos] = (u8)val;
             }
@@ -143,7 +141,6 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
         case 3: // INTERESTING VAL 32
              if (mut_len >= 4) {
                 pos = rand() % (mut_len - 3);
-                // FIXED: Using renamed array
                 int32_t val = MY_INTERESTING_32[rand() % (sizeof(MY_INTERESTING_32)/sizeof(int32_t))];
                 *(int32_t*)(data->mutated_buf + pos) = val;
              }

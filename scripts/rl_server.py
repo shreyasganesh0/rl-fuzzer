@@ -23,7 +23,7 @@ CONSTRAINTS_FILE = "constraints.json"
 # 6. Previous Action (Normalized)
 STATE_SIZE = 6 
 
-ACTION_SIZE = 10 
+ACTION_SIZE = 7 
 BATCH_SIZE = 64
 GAMMA = 0.99
 LEARNING_RATE = 1e-3
