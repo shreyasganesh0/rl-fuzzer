@@ -1,8 +1,0 @@
-# environment variables:
-AFL_CUSTOM_MUTATOR_LIBRARY=bin/rl_mutator.dylib
-AFL_CUSTOM_INFO_PROGRAM=bin/target
-AFL_CUSTOM_INFO_PROGRAM_ARGV=
-AFL_CUSTOM_INFO_OUT=outputs/default
-AFL_PATH=/Users/shreyas/Packages/AFLplusplus
-# command line:
-'/Users/shreyas/Packages/AFLplusplus/afl-fuzz' '-i' 'inputs' '-o' 'outputs' '-x' 'dictionaries/target.dict' '--' 'bin/target'
