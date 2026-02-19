@@ -99,8 +99,8 @@ echo "[+] Starting AFL++ with Neuro-Symbolic Mutator..."
 
 # Env Vars for Custom Mutator
 export AFL_CUSTOM_MUTATOR_LIBRARY="bin/rl_mutator.dylib"
-#export AFL_CUSTOM_MUTATOR_ONLY=1
-#export AFL_NO_UI=1
+export AFL_CUSTOM_MUTATOR_ONLY=1
+# export AFL_NO_UI=1
 
 "$AFL_ROOT/afl-fuzz" \
     -i inputs \
