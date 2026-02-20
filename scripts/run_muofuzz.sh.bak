@@ -30,7 +30,7 @@ done
 # ── 4. Prepare directories & seed ────────────────────────────────────────────
 echo "[+] Cleaning previous build..."
 mkdir -p bin inputs outputs dictionaries plots
-rm -f bin/rl_mutator.dylib rl_metrics.csv /tmp/muofuzz_shm
+rm -f bin/target bin/rl_mutator.dylib rl_metrics.csv /tmp/muofuzz_shm
 rm -rf outputs/*
 
 echo "AAAA" > inputs/seed.txt
@@ -50,7 +50,9 @@ for csv_file in "edge_enable_prob.csv" "edge_disable_prob.csv"; do
 done
 
 # ── 6. Compile target ─────────────────────────────────────────────────────────
-echo "[+] Using pre-built jsoncpp target..."
+echo "[+] Compiling target..."
+"$AFL_ROOT/afl-clang-fast" src/target.c -o bin/target
+[ -f bin/target ] || { echo "[-] Target compilation failed."; exit 1; }
 
 # ── 7. Compile custom mutator ─────────────────────────────────────────────────
 echo "[+] Compiling custom mutator..."
@@ -81,6 +83,6 @@ export AFL_CUSTOM_MUTATOR_ONLY=1
     -i inputs \
     -o outputs \
     -x dictionaries/target.dict \
-    -- bin/target -
+    -- bin/target
 
 wait $SERVER_PID

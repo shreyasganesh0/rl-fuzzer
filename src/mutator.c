@@ -62,8 +62,8 @@
 #define SPIN_NS          100000   /* 0.1 ms */
 
 /* Interesting mutation values */
-static const int32_t INTERESTING_8[]  = { -128, -1, 0, 1, 16, 32, 64, 100, 127 };
-static const int32_t INTERESTING_32[] = {
+static const int32_t MYINTERESTING_8[]  = { -128, -1, 0, 1, 16, 32, 64, 100, 127 };
+static const int32_t MYINTERESTING_32[] = {
     -2147483648, -100663046, -32769, 32768, 65535, 65536, 100663045, 2147483647
 };
 
@@ -289,7 +289,7 @@ size_t afl_custom_fuzz(my_mutator_t *data,
         case 2: /* INTERESTING 8-BIT */
             if (mut_len > 0) {
                 pos = rand() % (int)mut_len;
-                int8_t v = (int8_t)INTERESTING_8[rand() % (sizeof(INTERESTING_8)/sizeof(int32_t))];
+                int8_t v = (int8_t)MYINTERESTING_8[rand() % (sizeof(MYINTERESTING_8)/sizeof(int32_t))];
                 data->mutated_buf[pos] = (uint8_t)v;
             }
             break;
@@ -297,7 +297,7 @@ size_t afl_custom_fuzz(my_mutator_t *data,
         case 3: /* INTERESTING 32-BIT */
             if (mut_len >= 4) {
                 pos = rand() % (int)(mut_len - 3);
-                int32_t v = INTERESTING_32[rand() % (sizeof(INTERESTING_32)/sizeof(int32_t))];
+                int32_t v = MYINTERESTING_32[rand() % (sizeof(MYINTERESTING_32)/sizeof(int32_t))];
                 memcpy(data->mutated_buf + pos, &v, 4);
             }
             break;

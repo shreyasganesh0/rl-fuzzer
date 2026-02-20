@@ -174,10 +174,10 @@ class Agent:
         batch = random.sample(self.memory, BATCH_SIZE)
         states, actions, rewards, next_states = zip(*batch)
 
-        s  = torch.FloatTensor(states).to(self.device)
-        ns = torch.FloatTensor(next_states).to(self.device)
-        a  = torch.LongTensor(actions).to(self.device)
-        r  = torch.FloatTensor(rewards).to(self.device)
+        s  = torch.FloatTensor(np.array(states)).to(self.device)
+        ns = torch.FloatTensor(np.array(next_states)).to(self.device)
+        a  = torch.LongTensor(np.array(actions)).to(self.device)
+        r  = torch.FloatTensor(np.array(rewards)).to(self.device)
 
         with torch.no_grad():
             max_q_next = self.target(ns).max(dim=1).values
