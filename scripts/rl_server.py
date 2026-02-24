@@ -1,7 +1,8 @@
 # [sysrel]
 # rl_server.py — MuoFuzz RL Brain
 #
-# IPC: Shared memory file at SHM_PATH (no sockets).
+# IPC: Shared memory file at SHM_PATH (no sockets).  Layout unchanged from
+# original — only the action range (0..46) and state vector have grown.
 #
 # SHM layout (128 bytes total):
 #
@@ -20,17 +21,44 @@
 #     [68]  action       i32  — chosen action (0..ACTION_SIZE-1)
 #     [72]  _pad         56 bytes
 #
-# Synchronisation (no semaphore, no mutex):
-#   C   → writes state fields → release-stores state_seq (via __atomic_store_n RELEASE)
-#   Py  → polls state_seq; when it changes reads state, computes action
-#   Py  → writes action → writes action_seq (plain store; GIL makes it safe)
-#   C   → acquire-loads action_seq until it changes, then reads action
+# Synchronisation (no semaphore, no mutex) — unchanged:
+#   C   → writes state fields → release-stores state_seq
+#   Py  → polls state_seq; when changed reads state, computes action
+#   Py  → writes action → writes action_seq (sentinel last)
+#   C   → acquire-loads action_seq until changed → reads action
+#
+# State vector (98 elements):
+#   [0]      edge_id  / MAX_EDGE_ID        (normalised scalar)
+#   [1]      coverage / MAX_COVERAGE       (normalised scalar)
+#   [2]      min(new_edges, MAX_NEW_EDGES) / MAX_NEW_EDGES
+#   [3]      log1p(crashes) / log1p(MAX_CRASHES)
+#   [4..50]  disable_prob[0..46]   — per-action disable probability for edge_id
+#   [51..97] one-hot prev_action   — 47-element vector
+#
+# Reward function (potential-based shaping):
+#   phi(s)          = (coverage / MAX_COVERAGE) * 100
+#   coverage_term   = phi(s') - phi(s)          # can be negative if coverage stalls
+#   crash_term      = (log1p(crashes') - log1p(crashes)) * 1000
+#   disable_penalty = -5.0 * disable_prob[edge_id][prev_action]
+#   reward          = coverage_term + crash_term + disable_penalty - 0.1
+#
+# DQN (Double DQN):
+#   Architecture : Linear(98→256) → ReLU → Linear(256→256) → ReLU
+#                  → Linear(256→128) → ReLU → Linear(128→47)
+#   Gamma        : 0.99
+#   LR           : 1e-4
+#   Batch        : 64
+#   Replay buffer: 50 000 transitions
+#   Target sync  : every 500 training steps
+#   Epsilon      : 1.0 → 0.05 decayed linearly over 10 000 steps
+#   Grad clip    : max_norm = 10.0
 
 import mmap
 import struct
 import os
 import time
 import math
+import argparse
 import random
 import numpy as np
 import pandas as pd
@@ -39,139 +67,293 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 
-# ── Configuration ────────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
+
 SHM_PATH     = "/tmp/muofuzz_shm"
-SHM_SIZE     = 128          # bytes
+SHM_SIZE     = 128
 METRICS_FILE = "rl_metrics.csv"
-ENABLE_CSV   = "edge_enable_prob.csv"
-DISABLE_CSV  = "edge_disable_prob.csv"
+MODEL_PATH   = os.environ.get("MUOFUZZ_MODEL_PATH", "muofuzz_dqn.pt")
+DISABLE_CSV  = os.environ.get("MUOFUZZ_DISABLE_CSV", "edgeDisablingMutator.csv")
 
-# State indices
-STATE_SEQ_OFF    = 0        # offsets into the mmap buffer (bytes)
-EDGE_ID_OFF      = 4
-COVERAGE_OFF     = 8
-NEW_EDGES_OFF    = 12
-CRASHES_OFF      = 16
-TOTAL_EXECS_OFF  = 24       # u64
+# SHM byte offsets — identical to original / mutator.c
+STATE_SEQ_OFF   = 0
+EDGE_ID_OFF     = 4
+COVERAGE_OFF    = 8
+NEW_EDGES_OFF   = 12
+CRASHES_OFF     = 16
+TOTAL_EXECS_OFF = 24
+ACTION_SEQ_OFF  = 64
+ACTION_OFF      = 68
 
-ACTION_SEQ_OFF   = 64
-ACTION_OFF       = 68
+# ── Action / CSV column names (index → name must match mutator.c exactly) ─────
 
-# struct format strings
-STATE_FMT  = "=IIIIIII Q 32x"   # state_seq, edge_id, cov, new_edges, crashes, _pad, _pad | total_execs | 32 pad
-ACTION_FMT = "=I i 56x"          # action_seq, action | 56 pad
+ACTION_COLUMNS = [
+    "DET_FLIP_ONE_BIT",          #  0
+    "DET_FLIP_TWO_BITS",         #  1
+    "DET_FLIP_FOUR_BITS",        #  2
+    "DET_FLIP_ONE_BYTE",         #  3
+    "DET_FLIP_TWO_BYTES",        #  4
+    "DET_FLIP_FOUR_BYTES",       #  5
+    "DET_ARITH_ADD_ONE",         #  6
+    "DET_ARITH_SUB_ONE",         #  7
+    "DET_ARITH_ADD_TWO_LE",      #  8
+    "DET_ARITH_SUB_TWO_LE",      #  9
+    "DET_ARITH_ADD_TWO_BIG",     # 10
+    "DET_ARITH_SUB_TWO_BIG",     # 11
+    "DET_ARITH_ADD_FOUR_LE",     # 12
+    "DET_ARITH_SUB_FOUR_LE",     # 13
+    "DET_ARITH_ADD_FOUR_BIG",    # 14
+    "DET_ARITH_SUB_FOUR_BIG",    # 15
+    "INTERESTING_BYTE",          # 16
+    "INTERESTING_TWO_BYTES_LE",  # 17
+    "INTERESTING_TWO_BYTES_BIG", # 18
+    "INTERESTING_FOUR_BYTES_LE", # 19
+    "INTERESTING_FOUR_BYTES_BIG",# 20
+    "HAVOC_MUT_FLIPBIT",         # 21
+    "HAVOC_MUT_INTERESTING8",    # 22
+    "HAVOC_MUT_INTERESTING16",   # 23
+    "HAVOC_MUT_INTERESTING16BE", # 24
+    "HAVOC_MUT_INTERESTING32",   # 25
+    "HAVOC_MUT_INTERESTING32BE", # 26
+    "HAVOC_MUT_ARITH8_",         # 27
+    "HAVOC_MUT_ARITH8",          # 28
+    "HAVOC_MUT_ARITH16_",        # 29
+    "HAVOC_MUT_ARITH16BE_",      # 30
+    "HAVOC_MUT_ARITH16",         # 31
+    "HAVOC_MUT_ARITH16BE",       # 32
+    "HAVOC_MUT_ARITH32_",        # 33
+    "HAVOC_MUT_ARITH32BE_",      # 34
+    "HAVOC_MUT_ARITH32",         # 35
+    "HAVOC_MUT_ARITH32BE",       # 36
+    "HAVOC_MUT_RAND8",           # 37
+    "HAVOC_MUT_BYTEADD",         # 38
+    "HAVOC_MUT_BYTESUB",         # 39
+    "HAVOC_MUT_FLIP8",           # 40
+    "DICTIONARY_USER_EXTRAS_OVER",   # 41
+    "DICTIONARY_USER_EXTRAS_INSERT", # 42
+    "DICTIONARY_AUTO_EXTRAS_OVER",   # 43
+    "DICTIONARY_AUTO_EXTRAS_INSERT", # 44
+    "CUSTOM_MUTATOR",            # 45
+    "HAVOC",                     # 46
+]
 
-# RL hyper-parameters
-STATE_SIZE    = 19   # see build_state() for breakdown
-ACTION_SIZE   = 7
+ACTION_SIZE = len(ACTION_COLUMNS)   # 47
+assert ACTION_SIZE == 47
+
+# ── RL hyper-parameters ───────────────────────────────────────────────────────
+
+# State: 4 scalars + 47 disable probs + 47 one-hot prev_action = 98
+STATE_SIZE    = 4 + ACTION_SIZE + ACTION_SIZE   # 98
 BATCH_SIZE    = 64
 GAMMA         = 0.99
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-4
+REPLAY_SIZE   = 50_000
+TARGET_SYNC   = 500     # training steps between target-network copies
+EPSILON_START = 1.0
+EPSILON_MIN   = 0.05
+EPSILON_DECAY_STEPS = 10_000   # linear decay to EPSILON_MIN over N steps
+GRAD_CLIP     = 10.0
 
-# Maximum expected values for normalisation
+# Normalisation constants
 MAX_EDGE_ID   = 65536.0
 MAX_COVERAGE  = 65536.0
-MAX_NEW_EDGES = 100.0        # clip and normalise
-MAX_CRASHES   = 100.0        # log-normalised anyway
+MAX_NEW_EDGES = 100.0
+MAX_CRASHES   = 1000.0
 
-# How each of the 7 custom actions maps to AFL++ mutator column names.
-# Probabilities for unmapped actions (4=Dict) fall back to the mean over all cols.
-ACTION_MUTATOR_MAP = {
-    0: ["DET_ARITH_ADD_ONE",   "HAVOC_MUT_BYTEADD",    "HAVOC_MUT_ARITH8_"],
-    1: ["DET_ARITH_SUB_ONE",   "HAVOC_MUT_BYTESUB",    "HAVOC_MUT_ARITH8"],
-    2: ["DET_FLIP_ONE_BIT",    "DET_FLIP_ONE_BYTE"],
-    3: ["DET_FLIP_TWO_BITS",   "DET_FLIP_FOUR_BITS",
-        "DET_ARITH_ADD_TWO_LE","DET_ARITH_ADD_TWO_BIG"],
-    4: None,    # Dictionary — no direct AFL++ match; will use row mean
-    5: ["DET_ARITH_SUB_TWO_LE","DET_ARITH_SUB_TWO_BIG"],
-    6: ["HAVOC_MUT_FLIPBIT",   "HAVOC_MUT_ARITH16_",   "HAVOC_MUT_ARITH16BE_",
-        "HAVOC_MUT_ARITH16",   "HAVOC_MUT_ARITH16BE"],
-}
+# Reward weights
+W_DISABLE_PENALTY = 5.0     # multiplied by disable_prob of chosen action
+STEP_COST         = 0.1     # small negative reward per step to encourage progress
 
-# ── Edge-probability tables ───────────────────────────────────────────────────
+# ── Disable probability table ─────────────────────────────────────────────────
 
-def load_edge_tables():
-    """Load enable/disable probability CSVs into dicts keyed by int edge_id.
-    Each value is a Series of per-mutator probabilities (20 columns)."""
-    tables = {"enable": {}, "disable": {}}
-    for kind, path in [("enable", ENABLE_CSV), ("disable", DISABLE_CSV)]:
+class DisableTable:
+    """
+    Loads edgeDisablingMutator.csv and provides O(1) lookup of the
+    47-element disable probability vector for a given edge_id.
+
+    CSV format (index column = edge_id, 47 named mutator columns).
+    Unknown edge_ids return all-zeros (conservative: no penalty).
+    """
+
+    def __init__(self, path: str):
+        self._rows: dict[int, np.ndarray] = {}
         if not os.path.exists(path):
-            print(f"[!] Warning: {path} not found — edge probability features will be zero.")
-            continue
+            print(f"[!] Warning: disable CSV not found at '{path}' — "
+                  f"disable features will be zero.")
+            return
         df = pd.read_csv(path, index_col=0)
         df.index = df.index.astype(int)
-        tables[kind] = {eid: row for eid, row in df.iterrows()}
-        print(f"[+] Loaded {kind} probabilities for {len(tables[kind])} edges from {path}.")
-    return tables
+        # Reorder columns to match ACTION_COLUMNS order (defensive)
+        cols_present = [c for c in ACTION_COLUMNS if c in df.columns]
+        missing      = [c for c in ACTION_COLUMNS if c not in df.columns]
+        if missing:
+            print(f"[!] Warning: {len(missing)} CSV columns missing: {missing[:5]}…")
+        df = df.reindex(columns=ACTION_COLUMNS, fill_value=0.0)
+        for eid, row in df.iterrows():
+            self._rows[int(eid)] = row.values.astype(np.float32)
+        print(f"[+] DisableTable: loaded {len(self._rows)} edges from '{path}'")
+
+    def get(self, edge_id: int) -> np.ndarray:
+        """Return 47-element float32 array; zeros for unknown edges."""
+        return self._rows.get(edge_id, np.zeros(ACTION_SIZE, dtype=np.float32))
 
 
-def edge_probs_for_action(tables, edge_id, kind):
-    """Return a 7-element list of mean probabilities (one per custom action)
-    for a given edge_id and kind='enable'|'disable'.
-    Falls back to zeros for unknown edges."""
-    row = tables[kind].get(edge_id)
-    if row is None:
-        return [0.0] * ACTION_SIZE
+# ── State builder ─────────────────────────────────────────────────────────────
 
-    probs = []
-    for action_idx in range(ACTION_SIZE):
-        cols = ACTION_MUTATOR_MAP[action_idx]
-        if cols is None:
-            # Dictionary action: use mean over all columns
-            val = float(row.mean())
-        else:
-            # Average probabilities of the mapped columns that exist in the CSV
-            valid = [row[c] for c in cols if c in row.index]
-            val = float(np.mean(valid)) if valid else 0.0
-        probs.append(val)
-    return probs
+def build_state(edge_id: int, coverage: int, new_edges: int, crashes: int,
+                prev_action: int, disable_table: DisableTable) -> np.ndarray:
+    """
+    Construct the 98-element state vector.
+
+    Layout:
+      [0]      edge_id / MAX_EDGE_ID
+      [1]      coverage / MAX_COVERAGE
+      [2]      min(new_edges, MAX_NEW_EDGES) / MAX_NEW_EDGES
+      [3]      log1p(crashes) / log1p(MAX_CRASHES)
+      [4..50]  disable_prob[0..46]  for current edge_id   (47 values)
+      [51..97] one-hot encoding of prev_action            (47 values)
+
+    One-hot for prev_action: actions have no ordinal relationship, so encoding
+    as a single float would imply incorrect ordering — one-hot is exact.
+    """
+    dis = disable_table.get(edge_id)   # shape (47,)
+
+    one_hot = np.zeros(ACTION_SIZE, dtype=np.float32)
+    if 0 <= prev_action < ACTION_SIZE:
+        one_hot[prev_action] = 1.0
+
+    state = np.concatenate([
+        np.array([
+            edge_id / MAX_EDGE_ID,
+            coverage / MAX_COVERAGE,
+            min(new_edges, MAX_NEW_EDGES) / MAX_NEW_EDGES,
+            math.log1p(crashes) / math.log1p(MAX_CRASHES),
+        ], dtype=np.float32),
+        dis,
+        one_hot,
+    ])
+    assert len(state) == STATE_SIZE, f"State size mismatch: {len(state)}"
+    return state
 
 
-# ── DQN ──────────────────────────────────────────────────────────────────────
+# ── Reward function ───────────────────────────────────────────────────────────
+
+def compute_reward(coverage: int, prev_coverage: int,
+                   crashes: int, prev_crashes: int,
+                   edge_id: int, prev_action: int,
+                   disable_table: DisableTable) -> tuple[float, dict]:
+    """
+    Potential-based coverage shaping + crash bonus + disable penalty.
+
+    phi(s) = (coverage / MAX_COVERAGE) * 100
+    Shaping: phi(s') - phi(s)   — smooth gradient even when coverage stalls
+
+    Crash term: log-scaled to prevent first crash from dominating.
+
+    Disable penalty: the RL agent chose prev_action on this edge; if the
+    disable table says that action is harmful here, penalise it.
+    """
+    phi_curr = (coverage      / MAX_COVERAGE) * 100.0
+    phi_prev = (prev_coverage / MAX_COVERAGE) * 100.0
+    coverage_term = phi_curr - phi_prev
+
+    crash_delta = math.log1p(crashes) - math.log1p(prev_crashes)
+    crash_term  = crash_delta * 1000.0
+
+    dis = disable_table.get(edge_id)
+    disable_prob    = float(dis[prev_action]) if 0 <= prev_action < ACTION_SIZE else 0.0
+    disable_penalty = -W_DISABLE_PENALTY * disable_prob
+
+    reward = coverage_term + crash_term + disable_penalty - STEP_COST
+
+    components = {
+        "coverage_term":   coverage_term,
+        "crash_term":      crash_term,
+        "disable_penalty": disable_penalty,
+        "step_cost":       -STEP_COST,
+    }
+    return reward, components
+
+
+# ── Replay buffer ─────────────────────────────────────────────────────────────
+
+class ReplayBuffer:
+    def __init__(self, capacity: int):
+        self._buf = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state):
+        self._buf.append((state, action, reward, next_state))
+
+    def sample(self, n: int):
+        return random.sample(self._buf, n)
+
+    def __len__(self):
+        return len(self._buf)
+
+
+# ── DQN architecture ──────────────────────────────────────────────────────────
 
 class DQN(nn.Module):
+    """4-layer MLP: 98 → 256 → 256 → 128 → 47"""
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(STATE_SIZE, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, ACTION_SIZE),
+            nn.Linear(STATE_SIZE, 256), nn.ReLU(),
+            nn.Linear(256, 256),        nn.ReLU(),
+            nn.Linear(256, 128),        nn.ReLU(),
+            nn.Linear(128, ACTION_SIZE),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
-class Agent:
+# ── DQN Agent (Double DQN) ────────────────────────────────────────────────────
+
+class DQNAgent:
+    """
+    Double DQN: online net selects action, target net evaluates Q-value.
+    Prevents Q-value overestimation that plain DQN suffers.
+    """
+
     def __init__(self):
         self.device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model   = DQN().to(self.device)
-        self.target  = DQN().to(self.device)   # target network for stable Q-targets
-        self.target.load_state_dict(self.model.state_dict())
-        self.optimizer = optim.Adam(self.model.parameters(), lr=LEARNING_RATE)
-        self.memory  = deque(maxlen=10000)
-        self.epsilon = 1.0
-        self.epsilon_min   = 0.05
-        self.epsilon_decay = 0.995
-        self.update_target_every = 200
-        self._train_steps = 0
+        self.online  = DQN().to(self.device)
+        self.target  = DQN().to(self.device)
+        self.target.load_state_dict(self.online.state_dict())
+        self.target.eval()
 
-    def act(self, state):
-        if np.random.rand() <= self.epsilon:
+        self.optimizer = optim.Adam(self.online.parameters(), lr=LEARNING_RATE)
+        self.buffer    = ReplayBuffer(REPLAY_SIZE)
+
+        self.epsilon       = EPSILON_START
+        self._train_steps  = 0
+        self._total_steps  = 0
+
+    def select_action(self, state: np.ndarray) -> int:
+        """ε-greedy action selection."""
+        if random.random() < self.epsilon:
             return random.randrange(ACTION_SIZE)
         s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
-            return int(self.model(s).argmax().item())
+            return int(self.online(s).argmax(dim=1).item())
+
+    def _decay_epsilon(self):
+        """Linear decay from EPSILON_START to EPSILON_MIN over EPSILON_DECAY_STEPS."""
+        frac = min(self._total_steps / EPSILON_DECAY_STEPS, 1.0)
+        self.epsilon = EPSILON_START + frac * (EPSILON_MIN - EPSILON_START)
 
     def remember(self, state, action, reward, next_state):
-        self.memory.append((state, action, reward, next_state))
+        self.buffer.push(state, action, reward, next_state)
+        self._total_steps += 1
+        self._decay_epsilon()
 
-    def train(self):
-        if len(self.memory) < BATCH_SIZE:
+    def train_step(self) -> float:
+        """One gradient update. Returns loss (0.0 if buffer too small)."""
+        if len(self.buffer) < BATCH_SIZE:
             return 0.0
-        batch = random.sample(self.memory, BATCH_SIZE)
+
+        batch  = self.buffer.sample(BATCH_SIZE)
         states, actions, rewards, next_states = zip(*batch)
 
         s  = torch.FloatTensor(np.array(states)).to(self.device)
@@ -179,162 +361,179 @@ class Agent:
         a  = torch.LongTensor(np.array(actions)).to(self.device)
         r  = torch.FloatTensor(np.array(rewards)).to(self.device)
 
+        # Double DQN target:
+        #   online net selects the best next action
+        #   target net evaluates its Q-value
         with torch.no_grad():
-            max_q_next = self.target(ns).max(dim=1).values
-            targets = r + GAMMA * max_q_next
+            best_next_actions = self.online(ns).argmax(dim=1)
+            target_q          = self.target(ns).gather(1, best_next_actions.unsqueeze(1)).squeeze(1)
+            y                 = r + GAMMA * target_q
 
-        predictions = self.model(s).gather(1, a.unsqueeze(1)).squeeze()
-        loss = nn.functional.mse_loss(predictions, targets)
+        q_pred = self.online(s).gather(1, a.unsqueeze(1)).squeeze(1)
+        loss   = nn.functional.mse_loss(q_pred, y)
 
         self.optimizer.zero_grad()
         loss.backward()
+        nn.utils.clip_grad_norm_(self.online.parameters(), GRAD_CLIP)
         self.optimizer.step()
 
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
-
         self._train_steps += 1
-        if self._train_steps % self.update_target_every == 0:
-            self.target.load_state_dict(self.model.state_dict())
+        if self._train_steps % TARGET_SYNC == 0:
+            self.target.load_state_dict(self.online.state_dict())
+            print(f"[i] Target network synced at train step {self._train_steps}")
 
         return loss.item()
 
+    def save(self, path: str):
+        torch.save({
+            "online":       self.online.state_dict(),
+            "target":       self.target.state_dict(),
+            "optimizer":    self.optimizer.state_dict(),
+            "epsilon":      self.epsilon,
+            "train_steps":  self._train_steps,
+            "total_steps":  self._total_steps,
+        }, path)
+        print(f"[+] Model saved to {path}")
 
-# ── State builder ─────────────────────────────────────────────────────────────
-
-def build_state(edge_id, coverage, new_edges, crashes, prev_action, tables):
-    """Construct the 19-element state vector.
-
-    Layout:
-      [0]     edge_id       normalised to [0,1]
-      [1]     coverage_pct  fraction of MAX_COVERAGE
-      [2]     new_edges     clipped & normalised
-      [3]     crashes       log-normalised
-      [4..10] enable_prob   per custom action (7 values)
-      [11..17] disable_prob per custom action (7 values)
-      [18]    prev_action   normalised to [0,1]
-    """
-    en = edge_probs_for_action(tables, edge_id, "enable")
-    di = edge_probs_for_action(tables, edge_id, "disable")
-
-    state = [
-        edge_id / MAX_EDGE_ID,
-        coverage / MAX_COVERAGE,
-        min(new_edges, MAX_NEW_EDGES) / MAX_NEW_EDGES,
-        math.log1p(crashes) / math.log1p(MAX_CRASHES),
-        *en,
-        *di,
-        prev_action / float(ACTION_SIZE - 1),
-    ]
-    assert len(state) == STATE_SIZE, f"State size mismatch: {len(state)} != {STATE_SIZE}"
-    return np.array(state, dtype=np.float32)
+    def load(self, path: str):
+        if not os.path.exists(path):
+            print(f"[i] No checkpoint at {path} — starting fresh.")
+            return
+        ck = torch.load(path, map_location=self.device)
+        self.online.load_state_dict(ck["online"])
+        self.target.load_state_dict(ck["target"])
+        self.optimizer.load_state_dict(ck["optimizer"])
+        self.epsilon      = ck.get("epsilon",     EPSILON_START)
+        self._train_steps = ck.get("train_steps", 0)
+        self._total_steps = ck.get("total_steps", 0)
+        print(f"[+] Loaded checkpoint from {path}  "
+              f"(ε={self.epsilon:.3f}, steps={self._total_steps})")
 
 
-# ── Shared-memory helpers ─────────────────────────────────────────────────────
+# ── Shared-memory helpers — identical to original ─────────────────────────────
 
-def create_shm():
+def create_shm() -> mmap.mmap:
     """Create or truncate the shared memory file and mmap it."""
     fd = open(SHM_PATH, "w+b")
     fd.write(b'\x00' * SHM_SIZE)
     fd.flush()
     shm = mmap.mmap(fd.fileno(), SHM_SIZE)
-    fd.close()   # fd can close; mmap keeps the mapping alive
+    fd.close()   # mmap keeps the mapping alive
     return shm
 
 
-def shm_read_state(shm):
-    """Read the state region from the mmap.
-    Returns (state_seq, edge_id, coverage, new_edges, crashes, total_execs)."""
+def shm_read_state(shm: mmap.mmap) -> tuple:
+    """Return (state_seq, edge_id, coverage, new_edges, crashes, total_execs)."""
     shm.seek(0)
     raw = shm.read(64)
-    # u32 state_seq, u32 edge_id, u32 cov, u32 new_edges, u32 crashes, u32 _pad, u64 total_execs
-    state_seq, edge_id, coverage, new_edges, crashes, _pad, total_execs = struct.unpack_from(
-        "=IIIIII Q", raw, 0
-    )
+    state_seq, edge_id, coverage, new_edges, crashes, _pad, total_execs = \
+        struct.unpack_from("=IIIIII Q", raw, 0)
     return state_seq, edge_id, coverage, new_edges, crashes, total_execs
 
 
-def shm_write_action(shm, action, action_seq):
-    """Write the action region. Writes action first, then action_seq (the sentinel)."""
+def shm_write_action(shm: mmap.mmap, action: int, action_seq: int):
+    """Write action data first, sentinel last (matches C acquire/release protocol)."""
     shm.seek(ACTION_OFF)
-    shm.write(struct.pack("=i", action))      # write data first
+    shm.write(struct.pack("=i", action))
     shm.seek(ACTION_SEQ_OFF)
-    shm.write(struct.pack("=I", action_seq))  # write sentinel last (Python GIL is our 'release')
+    shm.write(struct.pack("=I", action_seq))
     shm.flush()
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
-    tables = load_edge_tables()
-    shm    = create_shm()
-    agent  = Agent()
+    parser = argparse.ArgumentParser(description="MuoFuzz RL server")
+    parser.add_argument("--disable-csv", default=DISABLE_CSV,
+                        help="Path to edgeDisablingMutator.csv")
+    parser.add_argument("--model",       default=MODEL_PATH,
+                        help="Path to save/load DQN checkpoint (.pt)")
+    parser.add_argument("--print-map",   action="store_true",
+                        help="Print action index → CSV column mapping and exit")
+    args = parser.parse_args()
 
-    # Write an initial action so the C side doesn't spin forever on boot
-    shm_write_action(shm, 6, 1)   # action=Havoc, action_seq=1
+    if args.print_map:
+        print(f"{'Idx':>4}  {'CSV column'}")
+        print("-" * 50)
+        for i, col in enumerate(ACTION_COLUMNS):
+            print(f"  {i:>2}  {col}")
+        return
+
+    disable_table = DisableTable(args.disable_csv)
+    shm           = create_shm()
+    agent         = DQNAgent()
+    agent.load(args.model)
+
+    # Write initial action so C side doesn't spin on boot
+    shm_write_action(shm, 46, 1)   # action=HAVOC, action_seq=1
 
     with open(METRICS_FILE, "w") as f:
-        f.write("step,reward,loss,epsilon,coverage,crashes,action,edge_id\n")
+        f.write("step,reward,cov_term,crash_term,disable_penalty,"
+                "loss,epsilon,coverage,crashes,action,edge_id\n")
 
-    print(f"[+] MuoFuzz RL brain ready. SHM at {SHM_PATH}. STATE_SIZE={STATE_SIZE}.")
+    print(f"[+] MuoFuzz RL brain ready.  SHM={SHM_PATH}  "
+          f"STATE_SIZE={STATE_SIZE}  ACTION_SIZE={ACTION_SIZE}")
 
-    prev_coverage    = 0
-    prev_crashes     = 0
-    prev_action      = 6            # start with Havoc
-    prev_state       = build_state(0, 0, 0, 0, 6, tables)
-
-    last_state_seq   = 0
-    action_seq       = 1            # starts at 1 (already written above)
-    step             = 0
+    prev_coverage  = 0
+    prev_crashes   = 0
+    prev_action    = 46   # HAVOC
+    prev_state     = build_state(0, 0, 0, 0, 46, disable_table)
+    last_state_seq = 0
+    action_seq     = 1
+    step           = 0
+    save_every     = 1000   # checkpoint interval
 
     while True:
         # ── Poll for new state from the mutator ──────────────────────────────
-        # Spin until state_seq changes (C release-stored it after writing data)
         while True:
             shm.seek(STATE_SEQ_OFF)
             cur_seq = struct.unpack("=I", shm.read(4))[0]
             if cur_seq != last_state_seq:
                 break
-            time.sleep(0.0001)   # ~0.1 ms back-off; avoids burning a full core
+            time.sleep(0.0001)
 
         last_state_seq = cur_seq
         _, edge_id, coverage, new_edges, crashes, total_execs = shm_read_state(shm)
 
-        # ── Build state & reward ─────────────────────────────────────────────
-        state = build_state(edge_id, coverage, new_edges, crashes, prev_action, tables)
+        # ── Build state ──────────────────────────────────────────────────────
+        state = build_state(edge_id, coverage, new_edges, crashes,
+                            prev_action, disable_table)
 
-        d_cov   = coverage - prev_coverage
-        d_crash = crashes  - prev_crashes
-        reward  = (d_cov * 100.0) + (d_crash * 10_000.0) - 0.1
+        # ── Compute reward ───────────────────────────────────────────────────
+        reward, comps = compute_reward(
+            coverage, prev_coverage, crashes, prev_crashes,
+            edge_id, prev_action, disable_table)
 
-        # Bonus: if we gained new edges AND the edge table had useful probabilities
-        en_probs = edge_probs_for_action(tables, edge_id, "enable")
-        if d_cov > 0 and any(p > 0 for p in en_probs):
-            reward += 20.0
-
-        # ── Store & train ────────────────────────────────────────────────────
+        # ── Store transition & train ─────────────────────────────────────────
         loss = 0.0
         if step > 0:
             agent.remember(prev_state, prev_action, reward, state)
-            loss = agent.train()
+            loss = agent.train_step()
 
-        # ── Choose action ────────────────────────────────────────────────────
-        action     = agent.act(state)
+        # ── Choose and send action ───────────────────────────────────────────
+        action     = agent.select_action(state)
         action_seq += 1
         shm_write_action(shm, action, action_seq)
 
-        # ── Log every 100 steps ──────────────────────────────────────────────
+        # ── Logging ─────────────────────────────────────────────────────────
         if step % 100 == 0:
             with open(METRICS_FILE, "a") as f:
                 f.write(
-                    f"{step},{reward:.4f},{loss:.6f},{agent.epsilon:.4f},"
+                    f"{step},{reward:.4f},"
+                    f"{comps['coverage_term']:.4f},{comps['crash_term']:.4f},"
+                    f"{comps['disable_penalty']:.4f},"
+                    f"{loss:.6f},{agent.epsilon:.4f},"
                     f"{coverage},{crashes},{action},{edge_id}\n"
                 )
             print(
                 f"[{step:>6}] edge={edge_id:<5} cov={coverage:<5} "
-                f"new={new_edges:<3} crash={crashes} "
-                f"act={action} ε={agent.epsilon:.3f} loss={loss:.5f}"
+                f"new={new_edges:<3} crash={crashes}  "
+                f"act={action:<2} ({ACTION_COLUMNS[action]:<32}) "
+                f"ε={agent.epsilon:.3f} r={reward:+.2f} loss={loss:.5f}"
             )
+
+        if step > 0 and step % save_every == 0:
+            agent.save(args.model)
 
         prev_state    = state
         prev_action   = action
