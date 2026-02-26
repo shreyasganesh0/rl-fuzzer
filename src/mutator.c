@@ -64,7 +64,7 @@
 
 /* ── Constants ──────────────────────────────────────────────────────────────── */
 
-#define SHM_PATH         "/tmp/muofuzz_shm"
+#define SHM_PATH         "/tmp/rl_shm"
 #define SHM_SIZE         128
 #define MAX_MUTATED_SIZE (1024 * 1024)
 #define ACTION_SIZE      47
@@ -90,20 +90,20 @@
 static const int8_t MYINTERESTING_8[] = {
     -128, -1, 0, 1, 16, 32, 64, 100, 127
 };
-#define N8  ((int)(sizeof(MYINTERESTING_8)  / sizeof(INTERESTING_8[0])))
+#define N8  ((int)(sizeof(MYINTERESTING_8)  / sizeof(MYINTERESTING_8[0])))
 
 static const int16_t MYINTERESTING_16[] = {
     -128, -1, 0, 1, 16, 32, 64, 100, 127,
     -32768, -129, 128, 255, 256, 512, 1000, 1024, 4096, 32767
 };
-#define N16 ((int)(sizeof(MYINTERESTING_16) / sizeof(INTERESTING_16[0])))
+#define N16 ((int)(sizeof(MYINTERESTING_16) / sizeof(MYINTERESTING_16[0])))
 
 static const int32_t MYINTERESTING_32[] = {
     -128, -1, 0, 1, 16, 32, 64, 100, 127,
     -32768, -129, 128, 255, 256, 512, 1000, 1024, 4096, 32767,
     -2147483648, -32769, 32768, 65535, 65536, 100663045, 2147483647
 };
-#define N32 ((int)(sizeof(MYINTERESTING_32) / sizeof(INTERESTING_32[0])))
+#define N32 ((int)(sizeof(MYINTERESTING_32) / sizeof(MYINTERESTING_32[0])))
 
 /* ── Byte-swap helpers ──────────────────────────────────────────────────────── */
 

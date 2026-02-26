@@ -35,3 +35,38 @@ plots/*.png
 # --- OS Specific ---
 .DS_Store
 Thumbs.db
+
+# Build outputs
+bin/
+outputs/
+outputs_eval/
+outputs_baseline/
+plots/
+
+# Model checkpoints
+*.pt
+
+# Training metrics
+rl_metrics.csv
+rl_metrics_eval.csv
+
+# AFL++ runtime
+/tmp/rl_shm
+
+# Seeds and corpus (large, reproducible via build script)
+inputs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Zip files
+*.zip
+
+# Temporary files
+*.tmp
+*.bak
+
+# OS
+.DS_Store
