@@ -47,9 +47,7 @@ plots/
 *.pt
 
 # Training metrics
-rl_metrics.csv
-rl_metrics_eval.csv
-
+*.csv
 # AFL++ runtime
 /tmp/rl_shm
 
@@ -70,3 +68,5 @@ __pycache__/
 
 # OS
 .DS_Store
+
+comparison_results/
