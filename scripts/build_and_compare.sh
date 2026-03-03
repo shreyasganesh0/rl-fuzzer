@@ -24,10 +24,15 @@
 #   --no-build          pass --no-build to each run script
 #   --eval-only         pass --eval-only to each run script
 #   --phase       train|eval|both               (default: both)
-#   --smooth      N     plot rolling window     (default: 200)
+#   --smooth      N     plot rolling window     (default: 500)
+#   --no-plateau        disable plateau early-stopping in all models
+#   --run-baseline      run a plain AFL++ baseline (no RL) for eval_steps and
+#                       include it in the comparison plots
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON="${REPO_ROOT}/.venv/bin/python3"
+[[ -x "$PYTHON" ]] || PYTHON=python3   # fallback to system python3
 
 TRAIN_STEPS=500000
 EVAL_STEPS=50000
@@ -40,6 +45,11 @@ NO_BUILD=0
 EVAL_ONLY=0
 PHASE="both"
 SMOOTH=500
+NO_PLATEAU=0
+RUN_BASELINE=0
+BASELINE_TIME_SECONDS=0
+BASELINE_TAG="baseline"
+BASELINE_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -54,6 +64,11 @@ while [[ $# -gt 0 ]]; do
         --eval-only)    EVAL_ONLY=1;          shift   ;;
         --phase)        PHASE="$2";           shift 2 ;;
         --smooth)       SMOOTH="$2";          shift 2 ;;
+        --no-plateau)   NO_PLATEAU=1;         shift   ;;
+        --run-baseline) RUN_BASELINE=1;       shift   ;;
+        --baseline-time-seconds) BASELINE_TIME_SECONDS="$2"; shift 2 ;;
+        --baseline-tag)          BASELINE_TAG="$2";           shift 2 ;;
+        --baseline-only)         BASELINE_ONLY=1;             shift   ;;
         --help|-h)
             head -40 "$0" | grep '^#' | sed 's/^# \{0,1\}//'
             exit 0 ;;
@@ -73,8 +88,9 @@ log_sep() { log "$(printf '─%.0s' {1..58})"; }
 die()     { echo "[-] $*" >&2; exit 1; }
 
 EXTRA_FLAGS=""
-[[ $NO_BUILD  -eq 1 ]] && EXTRA_FLAGS="$EXTRA_FLAGS --no-build"
-[[ $EVAL_ONLY -eq 1 ]] && EXTRA_FLAGS="$EXTRA_FLAGS --eval-only"
+[[ $NO_BUILD   -eq 1 ]] && EXTRA_FLAGS="$EXTRA_FLAGS --no-build"
+[[ $EVAL_ONLY  -eq 1 ]] && EXTRA_FLAGS="$EXTRA_FLAGS --eval-only"
+[[ $NO_PLATEAU -eq 1 ]] && EXTRA_FLAGS="$EXTRA_FLAGS --no-plateau"
 
 log_sep
 log "  RL Fuzzer — build_and_compare"
@@ -83,6 +99,11 @@ log "  train_steps   : $TRAIN_STEPS"
 log "  eval_steps    : $EVAL_STEPS"
 log "  models to run : $MODELS_TO_RUN"
 log "  compare_only  : $COMPARE_ONLY"
+log "  no_plateau    : $NO_PLATEAU"
+log "  run_baseline  : $RUN_BASELINE"
+log "  baseline_tag  : $BASELINE_TAG"
+log "  baseline_time : $BASELINE_TIME_SECONDS"
+log "  baseline_only : $BASELINE_ONLY"
 log "  phase         : $PHASE"
 log_sep
 
@@ -91,13 +112,13 @@ if [[ $COMPARE_ONLY -eq 0 ]]; then
     [[ -x "$TARGET" ]]             || die "target not found: $TARGET (run build_jsoncpp.sh first)"
     [[ -d "$SEEDS" ]]              || die "seeds not found: $SEEDS"
 fi
-command -v python3 >/dev/null || die "python3 not found"
-python3 -c "import torch" 2>/dev/null || die "PyTorch not installed"
+command -v "$PYTHON" >/dev/null || die "python3 not found"
+"$PYTHON" -c "import torch" 2>/dev/null || die "PyTorch not installed"
 
 # ── Run models ────────────────────────────────────────────────────────────────
 run_model() {
     local model="$1"
-    local script="${REPO_ROOT}/scripts/run_${model}.sh"
+    local script="${REPO_ROOT}/scripts/run_model.sh"
     [[ -f "$script" ]] || die "$script not found"
     chmod +x "$script"
 
@@ -110,6 +131,7 @@ run_model() {
     #   3. AFL++ background process is properly killed when RL server exits
     # shellcheck disable=SC2086
     bash "$script" \
+        --model-id    "$model" \
         --train-steps "$TRAIN_STEPS" \
         --eval-steps  "$EVAL_STEPS" \
         --afl-dir     "$AFL_DIR" \
@@ -120,7 +142,7 @@ run_model() {
     log "  $model complete in $(( $(date +%s) - t0 ))s"
 }
 
-if [[ $COMPARE_ONLY -eq 0 ]]; then
+if [[ $COMPARE_ONLY -eq 0 && $BASELINE_ONLY -eq 0 ]]; then
     IFS=',' read -ra MODEL_LIST <<< "$MODELS_TO_RUN"
     for model in "${MODEL_LIST[@]}"; do
         model="${model// /}"
@@ -132,6 +154,96 @@ if [[ $COMPARE_ONLY -eq 0 ]]; then
     log_sep; log "  All model runs complete."; log_sep
 else
     log "  --compare-only: skipping model runs"
+fi
+
+# ── Baseline (plain AFL++ without RL) ─────────────────────────────────────────
+# Run vanilla AFL++ for EVAL_STEPS using the same seeds and target as the RL
+# models, with no custom mutator.  We poll fuzzer_stats every 5 seconds and
+# emit a CSV whose 'coverage' column matches the RL eval CSVs so compare_metrics
+# can overlay it on the eval coverage plot.
+run_baseline() {
+    local AFL_FUZZ="${AFL_DIR}/afl-fuzz"
+    [[ -x "$AFL_FUZZ" ]] || { log "  [error] afl-fuzz not found at $AFL_FUZZ"; return 1; }
+    local BASE_DIR="${REPO_ROOT}/outputs_eval/${BASELINE_TAG}"
+    local PLOTS_DIR="${REPO_ROOT}/plots/${BASELINE_TAG}"
+    local CSV="${PLOTS_DIR}/rl_metrics_${BASELINE_TAG}_eval.csv"
+    mkdir -p "$BASE_DIR" "$PLOTS_DIR"
+    rm -rf "$BASE_DIR"
+
+    log_sep; log "  Running baseline AFL++ (tag=${BASELINE_TAG}, time=${BASELINE_TIME_SECONDS}s, steps=${EVAL_STEPS})"; log_sep
+    local t0; t0=$(date +%s)
+
+    # shellcheck disable=SC2086
+    if [[ "$BASELINE_TIME_SECONDS" -gt 0 ]]; then
+        # Time-based: AFL++ runs for exactly N seconds via -V flag (flushes stats on clean exit)
+        AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+            "$AFL_FUZZ" -V "$BASELINE_TIME_SECONDS" -i "$SEEDS" -o "$BASE_DIR" $DICT_FLAG -- "$TARGET" @@ &
+    else
+        # Steps-based: AFL++ self-terminates at EVAL_STEPS (-E flag)
+        AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+            "$AFL_FUZZ" -E "$EVAL_STEPS" -i "$SEEDS" -o "$BASE_DIR" $DICT_FLAG -- "$TARGET" @@ &
+    fi
+    local AFL_BL_PID=$!
+    log "  Baseline AFL++ PID $AFL_BL_PID"
+
+    # Write CSV header matching RL eval format so compare_metrics can parse it
+    echo "step,reward,coverage_term,crash_term,loss,epsilon,coverage,crashes,action,elapsed_seconds" \
+        > "$CSV"
+
+    local step=0
+    # We don't have a step counter — instead we poll fuzzer_stats and
+    # map wall-clock exec counts to a synthetic step index so the CSV
+    # is directly comparable to the RL eval CSVs.
+    while kill -0 "$AFL_BL_PID" 2>/dev/null; do
+        sleep 1
+        local stats="${BASE_DIR}/default/fuzzer_stats"
+        [[ -f "$stats" ]] || continue
+
+        local cov; cov=$(grep "^bitmap_cvg" "$stats" 2>/dev/null | awk -F'[: %]+' '{print $2}' || echo 0)
+        local execs; execs=$(grep "^execs_done" "$stats" 2>/dev/null | awk -F': *' '{print $2}' || echo 0)
+        local crashes; crashes=$(grep "^saved_crashes" "$stats" 2>/dev/null | awk -F': *' '{print $2}' || echo 0)
+        # bitmap_cvg is a percentage — convert to edge count using MAP_SIZE=65536
+        local edges; edges=$(awk "BEGIN{printf \"%d\", $cov * 65536 / 100}" 2>/dev/null || echo 0)
+        step=$execs
+
+        local elapsed; elapsed=$(( $(date +%s) - t0 ))
+        echo "${step},0.0,0.0,0.0,0.0,0.0,${edges},${crashes},-1,${elapsed}" >> "$CSV"
+
+        # Stop condition: time-based OR steps-based
+        if [[ "$BASELINE_TIME_SECONDS" -gt 0 ]]; then
+            if [[ "$elapsed" -ge "$BASELINE_TIME_SECONDS" ]]; then
+                log "  Baseline reached ${elapsed}s — stopping"
+                break
+            fi
+        else
+            if [[ "$execs" -ge "$EVAL_STEPS" ]]; then
+                log "  Baseline reached ${execs} execs — stopping"
+                break
+            fi
+        fi
+    done
+
+    kill -9 "$AFL_BL_PID" 2>/dev/null || true
+    wait  "$AFL_BL_PID" 2>/dev/null || true
+
+    # Save fuzzer_stats for the report
+    [[ -f "${BASE_DIR}/default/fuzzer_stats" ]] && \
+        cp "${BASE_DIR}/default/fuzzer_stats" "${PLOTS_DIR}/fuzzer_stats_eval.txt"
+
+    log "  Baseline complete in $(( $(date +%s) - t0 ))s  → $CSV"
+}
+
+DICT_FLAG=""
+[[ -f "${REPO_ROOT}/dictionaries/target.dict" ]] && \
+    DICT_FLAG="-x ${REPO_ROOT}/dictionaries/target.dict"
+
+if [[ $BASELINE_ONLY -eq 1 || ( $COMPARE_ONLY -eq 0 && $RUN_BASELINE -eq 1 ) ]]; then
+    run_baseline
+fi
+
+# --baseline-only: skip models and comparison — just run baseline then exit
+if [[ $BASELINE_ONLY -eq 1 ]]; then
+    exit 0
 fi
 
 # ── Comparison ────────────────────────────────────────────────────────────────
@@ -147,13 +259,19 @@ for model in m0_0 m1_0 m1_1 m2; do
     fi
 done
 
+# Include baseline if it was run or if its plots dir already exists
+BASELINE_PLOTS="${REPO_ROOT}/plots/${BASELINE_TAG}"
+if [[ -d "$BASELINE_PLOTS" ]]; then
+    COMPARE_ARGS="$COMPARE_ARGS --baseline $BASELINE_PLOTS"
+fi
+
 if [[ -z "$COMPARE_ARGS" ]]; then
     log "  [warn] No plots/ subdirs found — nothing to compare yet."
     exit 0
 fi
 
 # shellcheck disable=SC2086
-python3 "${REPO_ROOT}/scripts/compare_metrics.py" \
+"$PYTHON" "${REPO_ROOT}/scripts/compare_metrics.py" \
     $COMPARE_ARGS \
     --out           "$COMPARE_DIR" \
     --phase         "$PHASE" \
@@ -163,6 +281,7 @@ log_sep
 log "  build_and_compare done."
 log ""
 log "  Per-model metrics : ${REPO_ROOT}/plots/<model>/"
+log "  Baseline metrics  : ${REPO_ROOT}/plots/${BASELINE_TAG}/  (if --run-baseline used)"
 log "  Model checkpoints : ${REPO_ROOT}/bin/rl_m*.pt"
 log "  AFL++ train output: ${REPO_ROOT}/outputs/<model>/"
 log "  AFL++ eval output : ${REPO_ROOT}/outputs_eval/<model>/"

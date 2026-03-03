@@ -1,168 +1,100 @@
-# Neuro-Symbolic Fuzzer with Deep Reinforcement Learning
+# MuoFuzz — RL-Guided AFL++ Fuzzer
 
-MuoFuzz is a research fuzzing framework that integrates **AFL++** with a **Deep Q-Network (DQN)** agent to learn and optimise mutation strategies at runtime. Unlike traditional fuzzers that apply mutations randomly or through fixed deterministic schedules, MuoFuzz treats mutation selection as a sequential decision problem and learns which mutation primitive is most likely to discover new code coverage for a given execution context.
+MuoFuzz is a research fuzzing framework that integrates **AFL++** with **Deep Q-Network (DQN)** agents to learn and optimise mutation strategies at runtime. Instead of applying mutations randomly, MuoFuzz treats mutation selection as a sequential decision problem and learns which of 47 AFL++ mutation primitives is most likely to discover new code coverage for a given execution context.
+
+The project benchmarks **4 DQN model variants** (differing in state representation complexity) against a **plain AFL++ baseline**, producing comparison plots and statistical reports.
 
 ---
 
 ## Table of Contents
 
 1. [System Overview](#system-overview)
-2. [Architecture](#architecture)
-3. [Key Design Decisions](#key-design-decisions)
-4. [State Vector](#state-vector)
-5. [Action Space](#action-space)
-6. [Reward Function](#reward-function)
-7. [IPC: Shared Memory Protocol](#ipc-shared-memory-protocol)
-8. [Edge Probability Tables](#edge-probability-tables)
-9. [Installation](#installation)
-10. [Usage](#usage)
-11. [Project Structure](#project-structure)
-12. [Metrics and Analysis](#metrics-and-analysis)
+2. [Models](#models)
+3. [Architecture](#architecture)
+4. [Action Space](#action-space)
+5. [Reward Function](#reward-function)
+6. [IPC: Shared Memory Protocol](#ipc-shared-memory-protocol)
+7. [Installation](#installation)
+8. [Usage](#usage)
+9. [Project Structure](#project-structure)
+10. [Output Structure](#output-structure)
+11. [Metrics and Analysis](#metrics-and-analysis)
 
 ---
 
 ## System Overview
 
-MuoFuzz replaces AFL++'s stochastic mutation scheduler with a trained DQN agent that observes the fuzzer's state at each execution step and selects the mutation primitive most likely to produce new coverage. The agent learns through a standard online reinforcement learning loop: it selects an action, observes the coverage delta, receives a reward, and updates its neural network weights accordingly.
-
-The system consists of two cooperating processes:
+Each model variant consists of two cooperating processes that communicate through a memory-mapped file:
 
 | Component | Language | Role |
 |---|---|---|
-| **Custom Mutator** (`src/mutator.c`) | C | AFL++ plugin; collects execution state, communicates with the RL agent, executes the chosen mutation |
-| **RL Brain** (`scripts/rl_server.py`) | Python / PyTorch | Hosts the DQN; computes actions from state observations; runs the training loop |
+| **Custom Mutator** (`src/mutator_m*.c`) | C | AFL++ plugin; collects execution state, writes to SHM, reads action, executes the chosen mutation |
+| **RL Server** (`scripts/rl_server.py`) | Python / PyTorch | Hosts the DQN; reads state from SHM, computes actions, runs the training loop, writes CSV metrics |
 
-The two processes share state through a **memory-mapped file** (`/tmp/muofuzz_shm`), eliminating socket overhead and avoiding the need for a separate IPC daemon.
+```
+┌──────────────────────────────────────────────────────┐
+│  AFL++ Process                                        │
+│                                                       │
+│  afl_custom_fuzz() — mutator_m*.c                     │
+│    1. Collect coverage, edges, crashes from trace_bits │
+│    2. Write state to SHM  (RELEASE store)        ─────┤──→  /tmp/rl_shm_<model_id>
+│    3. Poll SHM for action (ACQUIRE load)         ←────┤──   (mmap file)
+│    4. Apply mutation primitive                        │
+└──────────────────────────────────────────────────────┘
+                         ↑↓
+┌──────────────────────────────────────────────────────┐
+│  RL Server — rl_server.py --model-id <id>             │
+│    1. Poll SHM for new state  (state_seq sentinel)    │
+│    2. Build state vector (model-specific)              │
+│    3. DQN forward pass → choose action                 │
+│    4. Write action to SHM (action_seq sentinel)        │
+│    5. Store (s, a, r, s') → replay buffer → backprop   │
+└──────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Architecture
+## Models
 
-```
-┌────────────────────────────────────────────────────────────┐
-│  AFL++ Process                                             │
-│                                                            │
-│   ┌───────────────────────────────────────────┐            │
-│   │  afl_custom_fuzz() — mutator.c            │            │
-│   │                                           │            │
-│   │  1. Read trace_bits  →  find edge_id      │            │
-│   │  2. Count coverage, crashes               │            │
-│   │  3. Write state to SHM  (RELEASE store)   │────────────┤──→  /tmp/muofuzz_shm
-│   │  4. Poll SHM for action (ACQUIRE load)    │←───────────┤──   (128-byte mmap)
-│   │  5. Apply mutation primitive              │            │
-│   └───────────────────────────────────────────┘            │
-└────────────────────────────────────────────────────────────┘
-                                                      ↑↓
-┌─────────────────────────────────────────────────────────────┐
-│  RL Brain — rl_server.py                                    │
-│                                                             │
-│   1. Poll SHM for new state  (state_seq sentinel)           │
-│   2. Lookup edge_id in enable/disable probability tables    │
-│   3. Build 19-element state vector                          │
-│   4. DQN forward pass  →  choose action                     │
-│   5. Write action to SHM  (action_seq sentinel)             │
-│   6. Store (s, a, r, s') in replay buffer                   │
-│   7. Sample mini-batch  →  backprop  →  update weights      │
-└─────────────────────────────────────────────────────────────┘
-```
+All 4 models share the same 47-action DQN architecture and training loop, differing only in **state representation** and **SHM layout**:
 
-### Why `AFL_CUSTOM_MUTATOR_ONLY=1` is required
+| Model | State Dims | SHM Size | DQN Architecture | State Description |
+|---|---|---|---|---|
+| **M0_0** | 3 | 128 B | 3→128→128→64→47 | Basic: `[coverage_n, new_edges_n, crashes_n]` |
+| **M1_0** | 12 | 256 B | 12→128→128→64→47 | Edge stability distribution over all 65536 edges |
+| **M1_1** | 13 | 256 B | 13→128→128→64→47 | Edge stability over visited edges only + visit count |
+| **M2** | 97 | 1024 B | 97→256→256→128→47 | Per-mutator trace-bit magnitudes (47 enabled + 47 disabled averages) |
 
-AFL++ normally runs its own deterministic stages (bit flips, arithmetic, dictionary) before invoking the custom mutator. If those stages are active, any coverage gain they produce is attributed to whatever action the RL agent last chose — a false association. Setting `AFL_CUSTOM_MUTATOR_ONLY=1` ensures all mutations are exclusively delegated to the custom mutator, making the reward signal causally attributable to the agent's decisions.
-
----
-
-## State Vector
-
-The RL agent observes a 19-dimensional state vector at each fuzzing step:
-
-| Index | Feature | Description |
-|---|---|---|
-| 0 | `edge_id_norm` | Most recently discovered (or hottest) edge, normalised to [0, 1] over 65,536 possible edges |
-| 1 | `coverage_pct` | Fraction of the AFL++ bitmap covered so far |
-| 2 | `new_edges_norm` | Number of new edges discovered in this step, clipped at 100 and normalised |
-| 3 | `crashes_log` | Total crash count, log-normalised |
-| 4–10 | `enable_prob[0..6]` | Per-action probability that applying that mutation to the current edge will **enable** a new edge (from CSV lookup) |
-| 11–17 | `disable_prob[0..6]` | Per-action probability that applying that mutation to the current edge will **disable** an existing edge (from CSV lookup) |
-| 18 | `prev_action_norm` | The action chosen in the previous step, normalised to [0, 1] |
-
-The enable/disable probability features replace the previous mock static analysis (`constraints.json`). They are derived from empirical data in `edge_enable_prob.csv` and `edge_disable_prob.csv`, which record, for each AFL++ edge ID and each AFL++ mutator type, the observed probability of that mutation transitioning the program into or out of that edge.
-
-### Edge ID Extraction
-
-The current edge is identified by scanning `afl->fsrv.trace_bits` (the bitmap written by the last execution) against `afl->virgin_bits` (the set of ever-seen edges). The mutator uses a two-pass heuristic:
-
-1. **Priority 1 — Newly discovered edge:** Scan from the highest index downward for any edge that is hit in `trace_bits` but was previously unseen in `virgin_bits` (i.e., `virgin_bits[i] == 0xFF`). This is the most informative signal: the current input reached a new path.
-2. **Priority 2 — Hottest edge:** If no new edge exists, return the index with the highest hit count in `trace_bits`. This characterises the code path being exercised even when no new coverage is found.
+Each model's configuration is defined in a self-contained module under `scripts/models/m*.py`, exporting SHM layout constants, `build_state()`, `shm_read()`, and CSV column definitions.
 
 ---
 
 ## Action Space
 
-The agent operates over 7 discrete mutation primitives:
+The agent selects from 47 discrete mutation primitives that map directly to AFL++'s internal mutator IDs:
 
-| Action | Name | Description | Primary Use Case |
-|---|---|---|---|
-| 0 | Arithmetic Increment | Increments a random byte by one | Bypassing loop counters and off-by-one conditions |
-| 1 | Arithmetic Decrement | Decrements a random byte by one | Bypassing loop counters and off-by-one conditions |
-| 2 | Interesting 8-bit | Replaces a byte with a boundary value (−128, 0, 127, etc.) | Triggering 8-bit integer overflow/underflow |
-| 3 | Interesting 32-bit | Overwrites four bytes with a boundary int32 value | Triggering 32-bit integer overflow and signed/unsigned edge cases |
-| 4 | Dictionary Insertion | Inserts or overwrites with a token from the loaded dictionary | Satisfying magic byte and header checks |
-| 5 | Delete Bytes | Removes a random subsequence of bytes | Satisfying length/size constraints |
-| 6 | Havoc | Stacked random bit flips, byte replacements, and inversions | General exploration of the state space |
+- **Deterministic stages** (16): bit flips (1/2/4 bits, 1/2/4 bytes), arithmetic add/sub (8/16/32-bit, LE/BE)
+- **Interesting values** (5): boundary constants (8/16/32-bit, LE/BE)
+- **Havoc mutations** (18): random bit flips, arithmetic, byte operations
+- **Dictionary operations** (4): user/auto extras overwrite/insert
+- **Meta** (2): custom mutator, full havoc
+- **Total: 47 actions** (enforced by `assert ACTION_SIZE == 47`)
 
 ---
 
 ## Reward Function
 
-At each step the agent receives:
-
 ```
-reward = (Δcoverage × 100) + (Δcrashes × 10,000) − 0.1
+reward = (coverage_now - coverage_prev) + (log1p(crashes_now) - log1p(crashes_prev)) * 1000
 ```
 
-The −0.1 term is a small living penalty that discourages the agent from taking actions that produce no new information. An additional +20 bonus is added when new coverage is found *and* the current edge has non-zero enable probabilities in the lookup table — rewarding the agent for exploiting structural knowledge about the program.
+Coverage deltas are measured in raw edge counts (one new edge = +1.0 reward). Crash discovery provides a large bonus through log-scaled crash count deltas. No step cost penalty is applied (`STEP_COST = 0.0`).
 
 ---
 
 ## IPC: Shared Memory Protocol
 
-The shared memory file at `/tmp/muofuzz_shm` is 128 bytes divided into two regions:
-
-**State region (bytes 0–63) — written by C, read by Python:**
-
-| Offset | Type | Field | Notes |
-|---|---|---|---|
-| 0 | `uint32_t` | `state_seq` | Sequence sentinel; C **release-stores** this last |
-| 4 | `uint32_t` | `edge_id` | Current edge |
-| 8 | `uint32_t` | `coverage` | Bitmap coverage count |
-| 12 | `uint32_t` | `new_edges` | Delta new edges this step |
-| 16 | `uint32_t` | `crashes` | Total crash count |
-| 24 | `uint64_t` | `total_execs` | Total executions |
-
-**Action region (bytes 64–127) — written by Python, read by C:**
-
-| Offset | Type | Field | Notes |
-|---|---|---|---|
-| 64 | `uint32_t` | `action_seq` | Sequence sentinel; Python writes this last |
-| 68 | `int32_t` | `action` | Chosen action (0–6) |
-
-**Synchronisation** uses GCC atomic builtins (`__atomic_store_n` / `__atomic_load_n`) with `__ATOMIC_RELEASE` and `__ATOMIC_ACQUIRE` memory orders. This is necessary on AArch64 (ARM64), which has a weakly ordered memory model and does not guarantee that plain stores become visible to other cores in program order. No mutex or semaphore is required: the monotonically incrementing sequence sentinel provides the necessary happens-before relationship between writer and reader.
-
----
-
-## Edge Probability Tables
-
-Two CSV files provide the per-edge, per-mutator empirical transition probabilities used to populate the state vector:
-
-| File | Content |
-|---|---|
-| `edge_enable_prob.csv` | `P(edge E becomes active | mutator M is applied)` |
-| `edge_disable_prob.csv` | `P(edge E becomes inactive | mutator M is applied)` |
-
-Rows are indexed by integer edge ID. Columns correspond to the 20 AFL++ mutator types (e.g., `DET_ARITH_ADD_ONE`, `HAVOC_MUT_FLIPBIT`). The RL server aggregates the columns most relevant to each of the 7 custom actions using a predefined mapping and computes their mean as the feature value.
-
-These files must be present in the project root directory (same level as `scripts/`) when the RL brain is launched. The shell script will warn if they are missing; the agent will still run but without edge-probability features (all zeros).
+Each model uses its own SHM file at `/tmp/rl_shm_<model_id>`. The C mutator writes execution state (coverage, edges, crashes, and model-specific features) and the Python server reads state, computes an action, and writes it back. Synchronisation uses monotonically incrementing sequence numbers with GCC atomic builtins (`__ATOMIC_RELEASE` / `__ATOMIC_ACQUIRE`).
 
 ---
 
@@ -173,114 +105,187 @@ These files must be present in the project root directory (same level as `script
 | Dependency | Purpose |
 |---|---|
 | AFL++ | Fuzzing engine |
-| Python 3.8+ | RL brain runtime |
+| Python 3.8+ | RL server runtime |
 | PyTorch | DQN implementation |
-| NumPy, Pandas | Numerical operations and CSV loading |
-| LLVM / Clang | Compilation and AFL++ instrumentation |
+| NumPy | Numerical operations |
+| Matplotlib | Comparison plots |
+| LLVM / Clang | Mutator compilation and AFL++ instrumentation |
 
 ```bash
-pip install torch numpy pandas
+# Create virtualenv and install deps
+python3 -m venv .venv
+source .venv/bin/activate
+pip install torch numpy matplotlib
+
+# Set AFL++ path
+export AFL_ROOT=~/packages/AFLplusplus
 ```
 
-### Environment Setup
+### Build Target
+
+Build the instrumented target binary (jsoncpp-based):
 
 ```bash
-export AFL_ROOT=~/AFLplusplus   # adjust to your AFL++ installation path
+bash scripts/build_jsoncpp.sh
 ```
 
-### Edge Probability CSVs
-
-Copy your edge probability CSV files to the project root:
-
-```bash
-cp /path/to/edge_enable_prob.csv  .
-cp /path/to/edge_disable_prob.csv .
-```
+This produces `bin/target` and sets up `inputs/` and `dictionaries/`.
 
 ---
 
 ## Usage
 
-All build, initialisation, and launch steps are automated by the provided shell script:
+### Run a Single Model
 
 ```bash
-chmod +x scripts/run_muofuzz.sh
-./scripts/run_muofuzz.sh
+# Train + eval for one model
+bash scripts/run_model.sh --model-id m0_0 --train-steps 50000 --eval-steps 20000
+
+# Eval only (requires existing checkpoint at bin/rl_m0_0.pt)
+bash scripts/run_model.sh --model-id m2 --eval-only --eval-steps 20000
 ```
 
-The script performs the following steps in order:
+Options for `run_model.sh`:
 
-1. Removes stale build artefacts, output directories, and the shared memory file.
-2. Creates the initial seed input and dictionary.
-3. Copies edge probability CSVs to the working directory (if `EDGE_CSV_DIR` is set).
-4. Compiles the target binary using `afl-clang-fast`.
-5. Compiles the custom mutator as a shared library.
-6. Starts the RL brain (`rl_server.py`) in the background and waits 2 seconds for it to initialise the shared memory file.
-7. Launches `afl-fuzz` with `AFL_CUSTOM_MUTATOR_ONLY=1` and the compiled mutator library.
+| Flag | Default | Description |
+|---|---|---|
+| `--model-id ID` | (required) | Model: `m0_0`, `m1_0`, `m1_1`, `m2` |
+| `--train-steps N` | 500000 | Training step limit |
+| `--eval-steps N` | 50000 | Evaluation step limit |
+| `--afl-dir DIR` | `$AFL_ROOT` | AFL++ installation directory |
+| `--target PATH` | `bin/target` | Instrumented target binary |
+| `--seeds DIR` | `inputs/` | Seed corpus directory |
+| `--no-build` | | Skip mutator recompilation |
+| `--eval-only` | | Skip training phase |
+| `--no-plateau` | | Disable coverage-plateau early stopping |
 
-### Manual Launch (two terminals)
+### Run All Models + Comparison
 
-If you prefer to run components separately:
-
-**Terminal 1 — RL brain:**
 ```bash
-cd <project_root>
-python3 scripts/rl_server.py
+# Full benchmark: train + eval all 4 models, then compare
+bash scripts/build_and_compare.sh --train-steps 50000 --eval-steps 20000
+
+# Include a plain AFL++ baseline
+bash scripts/build_and_compare.sh --train-steps 50000 --eval-steps 20000 --run-baseline
+
+# Compare only (models already ran)
+bash scripts/build_and_compare.sh --compare-only
 ```
 
-**Terminal 2 — AFL++:**
+### Multi-Run Experiment (Statistical)
+
 ```bash
-export AFL_CUSTOM_MUTATOR_LIBRARY=bin/rl_mutator.dylib
-export AFL_CUSTOM_MUTATOR_ONLY=1
-afl-fuzz -i inputs -o outputs -x dictionaries/target.dict -- bin/target
+# Train once, eval N times, produce mean +/- std comparison
+bash scripts/run_experiment.sh --eval-runs 5 --eval-steps 20000
 ```
 
-> **Note:** The RL brain must be started first so that the shared memory file exists before the mutator attempts to map it.
+### RL Server Directly (Advanced)
+
+```bash
+python3 scripts/rl_server.py --model-id m0_0 --mode train --train-steps 50000
+python3 scripts/rl_server.py --model-id m2   --mode eval  --eval-steps 20000 --model bin/rl_m2.pt
+```
 
 ---
 
 ## Project Structure
 
 ```
-muofuzz/
+rl-fuzzer/
 ├── src/
-│   ├── mutator.c           # AFL++ custom mutator (IPC, edge detection, mutation execution)
-│   └── target.c            # Reference vulnerable target for benchmarking
+│   ├── mutator_m0_0.c          # AFL++ custom mutator — basic state (128B SHM)
+│   ├── mutator_m1_0.c          # AFL++ custom mutator — edge stability (256B SHM)
+│   ├── mutator_m1_1.c          # AFL++ custom mutator — visited-edge stability (256B SHM)
+│   └── mutator_m2.c            # AFL++ custom mutator — per-action magnitudes (1024B SHM)
 ├── scripts/
-│   ├── rl_server.py        # RL brain: DQN, replay buffer, state builder, SHM protocol
-│   ├── plot_metrics.py     # Training metrics visualisation
-│   └── run_muofuzz.sh      # Automated build and launch script
-├── inputs/
-│   └── seed.txt            # Initial seed corpus
-├── dictionaries/
-│   └── target.dict         # AFL++ token dictionary
-├── edge_enable_prob.csv    # Per-edge enable probability table (must be provided)
-├── edge_disable_prob.csv   # Per-edge disable probability table (must be provided)
-├── rl_metrics.csv          # Generated at runtime: per-step training log
-└── plots/                  # Generated by plot_metrics.py
+│   ├── rl_server.py             # Unified RL server entry point (--model-id)
+│   ├── run_model.sh             # Unified train+eval shell runner (--model-id)
+│   ├── models/
+│   │   ├── __init__.py          # MODEL_IDS = ["m0_0", "m1_0", "m1_1", "m2"]
+│   │   ├── common.py            # Shared: DQN, DQNAgent, ReplayBuffer, PlateauDetector,
+│   │   │                        #   compute_reward, ACTION_COLUMNS, hyperparameters
+│   │   ├── m0_0.py              # M0_0 config: STATE_SIZE=3, shm_read, build_state
+│   │   ├── m1_0.py              # M1_0 config: STATE_SIZE=12
+│   │   ├── m1_1.py              # M1_1 config: STATE_SIZE=13
+│   │   └── m2.py                # M2 config: STATE_SIZE=97
+│   ├── build_and_compare.sh     # Orchestrator: run all models + comparison
+│   ├── run_experiment.sh        # Multi-run experiment (train once, eval N times)
+│   ├── compare_metrics.py       # 4-way comparison, plots, and report generation
+│   └── build_jsoncpp.sh         # One-time target build script
+├── inputs/                      # Seed corpus (generated by build_jsoncpp.sh)
+├── dictionaries/                # AFL++ dictionaries
+└── bin/                         # Build outputs (mutator .so, target, .pt checkpoints)
+```
+
+### Adding a New Model
+
+1. Create `scripts/models/m_new.py` implementing the module interface:
+   - `STATE_SIZE`, `SHM_SIZE`, `SHM_PATH`, `MODEL_PATH_DEFAULT`, `LABEL`, `HIDDEN_LAYERS`
+   - `STATE_SEQ_OFF`, `ACTION_OFF`, `ACTION_SEQ_OFF`
+   - `CSV_EXTRA_HEADER`
+   - `shm_read(shm, shm_size) -> dict`
+   - `build_state(d, train_steps) -> np.ndarray`
+   - `zero_state_data() -> dict`
+   - `csv_extra_fields(d, args) -> str`
+   - `log_extra(d, args) -> str`
+   - `exit_summary(d, step, cov, cr, epsilon, tag) -> None`
+2. Add the ID to `MODEL_IDS` in `scripts/models/__init__.py`
+3. Create a corresponding `src/mutator_m_new.c` with matching SHM layout
+4. Run: `bash scripts/run_model.sh --model-id m_new`
+
+---
+
+## Output Structure
+
+```
+plots/<model_id>/
+  rl_metrics_<model_id>_train.csv    # Training metrics (every 100 steps)
+  rl_metrics_<model_id>_eval.csv     # Eval metrics
+  fuzzer_stats_train.txt             # AFL++ fuzzer_stats snapshot
+  fuzzer_stats_eval.txt
+
+comparison_results/
+  comparison_report.txt              # Mean +/- std table (if --multi-run)
+  comparison_summary.json
+  plot_coverage_eval_steps.png
+  plot_coverage_eval_time.png
+  plot_coverage_bar_eval.png
+  plot_throughput_eval.png
+  plot_coverage_per_sec_eval.png
 ```
 
 ---
 
 ## Metrics and Analysis
 
-Training metrics are written to `rl_metrics.csv` every 100 steps:
+Training and eval metrics are written to CSV every 100 steps. The base columns shared by all models:
 
 | Column | Description |
 |---|---|
 | `step` | Global step counter |
-| `reward` | Reward received at this step |
-| `loss` | DQN MSE loss for the training batch |
+| `reward` | Reward received |
+| `coverage_term` | Coverage delta component of reward |
+| `crash_term` | Crash delta component of reward |
+| `loss` | DQN TD loss |
 | `epsilon` | Current exploration rate |
-| `coverage` | AFL++ bitmap coverage count |
-| `crashes` | Total crashes discovered |
+| `coverage` | AFL++ edge coverage count |
+| `crashes` | Total crashes |
 | `action` | Action chosen by the agent |
-| `edge_id` | Edge ID from the current execution |
+| `elapsed_seconds` | Wall-clock time since start |
 
-Generate training plots with:
+Model-specific extra columns:
+
+| Model | Extra Columns |
+|---|---|
+| M0_0 | (none) |
+| M1_0 | `en_mean_n`, `dis_mean_n`, `stability` |
+| M1_1 | `num_visited`, `stability` |
+| M2 | `mean_avg_en`, `mean_avg_dis`, `top_en_action`, `top_dis_action`, `nonzero_mag_frac` |
+
+Generate comparison plots and reports:
 
 ```bash
-python3 scripts/plot_metrics.py
+python3 scripts/compare_metrics.py \
+    --m0-0 plots/m0_0 --m1-0 plots/m1_0 --m1-1 plots/m1_1 --m2 plots/m2 \
+    --out comparison_results/ --phase eval
 ```
-
-This produces `plots/training_health.png` (reward, loss, epsilon over time) and `plots/policy_analysis.png` (action distribution and per-edge policy trajectory).

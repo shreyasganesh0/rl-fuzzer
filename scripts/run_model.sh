@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# scripts/run_m1_1.sh  —  train + eval pipeline for Model M1_1
-# Run from repo root:  bash scripts/run_m1_1.sh [OPTIONS]
+# scripts/run_model.sh — Unified train + eval pipeline for any RL model.
+# Run from repo root:  bash scripts/run_model.sh --model-id m0_0 [OPTIONS]
 #
 # Options:
-#   --train-steps N   step limit (default: 50000)
-#   --eval-steps  N   eval steps (default: 20000)
+#   --model-id    ID  model identifier: m0_0, m1_0, m1_1, m2  (required)
+#   --train-steps N   step limit (default: 500000)
+#   --eval-steps  N   eval steps (default: 50000)
 #   --afl-dir     DIR AFL++ root (default: $AFL_ROOT or ~/packages/AFLplusplus)
 #   --target      PATH            (default: bin/target)
 #   --seeds       DIR             (default: inputs/)
 #   --no-build        skip recompile
 #   --eval-only       skip training
+#   --no-plateau      disable plateau early-stopping
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON="${REPO_ROOT}/.venv/bin/python3"
+[[ -x "$PYTHON" ]] || PYTHON=python3
 
+MODEL_ID=""
 TRAIN_STEPS=500000
 EVAL_STEPS=50000
 AFL_DIR="${AFL_ROOT:-$HOME/packages/AFLplusplus}"
@@ -21,10 +26,11 @@ TARGET="${REPO_ROOT}/bin/target"
 SEEDS="${REPO_ROOT}/inputs"
 NO_BUILD=0
 EVAL_ONLY=0
-SHM_PATH="/tmp/rl_shm_m1_1"
+NO_PLATEAU=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --model-id)    MODEL_ID="$2";    shift 2 ;;
         --train-steps) TRAIN_STEPS="$2"; shift 2 ;;
         --eval-steps)  EVAL_STEPS="$2";  shift 2 ;;
         --afl-dir)     AFL_DIR="$2";     shift 2 ;;
@@ -32,18 +38,26 @@ while [[ $# -gt 0 ]]; do
         --seeds)       SEEDS="$2";       shift 2 ;;
         --no-build)    NO_BUILD=1;       shift   ;;
         --eval-only)   EVAL_ONLY=1;      shift   ;;
+        --no-plateau)  NO_PLATEAU=1;     shift   ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
+[[ -n "$MODEL_ID" ]] || { echo "[-] --model-id is required"; exit 1; }
+
+# Derive all paths from MODEL_ID
+SHM_PATH="/tmp/rl_shm_${MODEL_ID}"
 AFL_FUZZ="${AFL_DIR}/afl-fuzz"
 AFL_INC="${AFL_DIR}/include"
 DICT="${REPO_ROOT}/dictionaries/target.dict"
-MUTATOR_SO="${REPO_ROOT}/bin/mutator_m1_1.so"
-MODEL_PT="${REPO_ROOT}/bin/rl_m1_1.pt"
-AFL_TRAIN_DIR="${REPO_ROOT}/outputs/m1_1"
-AFL_EVAL_DIR="${REPO_ROOT}/outputs_eval/m1_1"
-PLOTS_DIR="${REPO_ROOT}/plots/m1_1"
+MUTATOR_SO="${REPO_ROOT}/bin/mutator_${MODEL_ID}.so"
+MODEL_PT="${REPO_ROOT}/bin/rl_${MODEL_ID}.pt"
+AFL_TRAIN_DIR="${REPO_ROOT}/outputs/${MODEL_ID}"
+AFL_EVAL_DIR="${REPO_ROOT}/outputs_eval/${MODEL_ID}"
+PLOTS_DIR="${REPO_ROOT}/plots/${MODEL_ID}"
+LABEL="${MODEL_ID^^}"   # uppercase for log tags (m0_0 → M0_0)
+# Fix: bash ${..^^} converts _ to uppercase too, but we want M0_0 not M0_0
+# Actually m0_0^^  gives M0_0 which is fine.
 
 mkdir -p "${REPO_ROOT}/bin" "$PLOTS_DIR" \
          "${REPO_ROOT}/outputs" "${REPO_ROOT}/outputs_eval"
@@ -52,7 +66,7 @@ mkdir -p "${REPO_ROOT}/bin" "$PLOTS_DIR" \
 AFL_PID=0
 RL_PID=0
 
-log() { echo "[$(date +%H:%M:%S)] [M1_1] $*"; }
+log() { echo "[$(date +%H:%M:%S)] [${LABEL}] $*"; }
 die() { echo "[-] $*" >&2; exit 1; }
 
 cleanup() {
@@ -64,12 +78,10 @@ cleanup() {
     rm -f "$SHM_PATH"
 }
 
-# Trap EXIT, SIGINT (Ctrl+C), and SIGTERM so cleanup fires regardless of
-# whether this script is run directly or as a subprocess of build_and_compare.sh
 trap cleanup EXIT SIGINT SIGTERM
 
 log "======================================================"
-log "  RL Fuzzer — Model M1_1"
+log "  RL Fuzzer — Model ${LABEL}"
 log "  repo     : $REPO_ROOT"
 log "  afl_dir  : $AFL_DIR"
 log "  target   : $TARGET"
@@ -80,17 +92,17 @@ log "======================================================"
 [[ -x "$AFL_FUZZ" ]] || die "afl-fuzz not found at $AFL_FUZZ  (set AFL_ROOT or --afl-dir)"
 [[ -x "$TARGET" ]]   || die "target not found: $TARGET  (run build_jsoncpp.sh first)"
 [[ -d "$SEEDS" ]]    || die "seeds not found: $SEEDS"
-command -v python3 >/dev/null || die "python3 not found"
-python3 -c "import torch" 2>/dev/null || die "PyTorch not installed"
+command -v "$PYTHON" >/dev/null || die "python3 not found"
+"$PYTHON" -c "import torch" 2>/dev/null || die "PyTorch not installed"
 
 # ── Dict flag ─────────────────────────────────────────────────────────────────
 DICT_FLAG=""; [[ -f "$DICT" ]] && DICT_FLAG="-x $DICT"
 
 # ── Build mutator ─────────────────────────────────────────────────────────────
 if [[ $NO_BUILD -eq 0 ]]; then
-    log "Compiling src/mutator_m1_1.c → $MUTATOR_SO"
+    log "Compiling src/mutator_${MODEL_ID}.c → $MUTATOR_SO"
     clang -O2 -shared -fPIC -I"${AFL_INC}" \
-        -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_m1_1.c"
+        -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_${MODEL_ID}.c"
     log "Mutator compiled OK"
 else
     [[ -f "$MUTATOR_SO" ]] || die "--no-build but $MUTATOR_SO not found"
@@ -103,9 +115,11 @@ if [[ $EVAL_ONLY -eq 0 ]]; then
     rm -f "$MODEL_PT"   # always start fresh for a clean comparison run
     rm -rf "$AFL_TRAIN_DIR"; rm -f "$SHM_PATH"
 
-    python3 "${REPO_ROOT}/scripts/rl_server_m1_1.py" \
+    "$PYTHON" "${REPO_ROOT}/scripts/rl_server.py" \
+        --model-id "$MODEL_ID" \
         --mode train --model "$MODEL_PT" \
-        --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" &
+        --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
+        $( [[ $NO_PLATEAU -eq 1 ]] && echo "--no-plateau" ) &
     RL_PID=$!
     log "RL server PID $RL_PID"
     sleep 2
@@ -134,13 +148,11 @@ log "--- EVAL PHASE ---"
 [[ -f "$MODEL_PT" ]] || die "No checkpoint at $MODEL_PT — train first"
 rm -rf "$AFL_EVAL_DIR"; rm -f "$SHM_PATH"
 
-# Always evaluate on the original seed corpus so all models start from the
-# same initial conditions. Using the training queue as eval seeds confounds
-# model quality with queue richness accumulated during training.
 EVAL_SEEDS="$SEEDS"
 log "Seeding eval from original corpus: $EVAL_SEEDS"
 
-python3 "${REPO_ROOT}/scripts/rl_server_m1_1.py" \
+"$PYTHON" "${REPO_ROOT}/scripts/rl_server.py" \
+    --model-id "$MODEL_ID" \
     --mode eval --model "$MODEL_PT" \
     --eval-steps "$EVAL_STEPS" --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" &
 RL_PID=$!
@@ -168,7 +180,7 @@ log "AFL++ eval stopped"
 trap - EXIT SIGINT SIGTERM
 
 log "======================================================"
-log "  M1_1 done."
+log "  ${LABEL} done."
 log "    checkpoint : $MODEL_PT"
 log "    metrics    : $PLOTS_DIR"
 log "    afl train  : $AFL_TRAIN_DIR"
