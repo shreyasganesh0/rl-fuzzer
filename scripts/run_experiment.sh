@@ -159,6 +159,18 @@ if [[ $SKIP_TRAIN -eq 0 ]]; then
                "${dst}/fuzzer_stats_eval.txt"
     done
 
+    # Save baseline run_1 (from end-of-training eval)
+    if [[ $RUN_BASELINE -eq 1 ]]; then
+        dst="${REPO}/plots/baseline/run_1"
+        mkdir -p "$dst"
+        [[ -f "${REPO}/plots/baseline/rl_metrics_baseline_eval.csv" ]] && \
+            cp "${REPO}/plots/baseline/rl_metrics_baseline_eval.csv" \
+               "${dst}/rl_metrics_baseline_eval.csv"
+        [[ -f "${REPO}/outputs_eval/baseline/default/fuzzer_stats" ]] && \
+            cp "${REPO}/outputs_eval/baseline/default/fuzzer_stats" \
+               "${dst}/fuzzer_stats_eval.txt"
+    fi
+
     FIRST_EVAL_RUN=2   # runs 2..N are pure eval-only
 else
     log "  PHASE 1: Skipped (--skip-train)"

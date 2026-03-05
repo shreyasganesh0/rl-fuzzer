@@ -138,7 +138,7 @@ def load_multi_run_csvs(model_id: str, results_dir: Path, phase: str, max_runs: 
     for i in range(1, max_runs + 1):
         run_dir = results_dir / f"run_{i}"
         if not run_dir.exists():
-            break
+            continue
         csv_path = run_dir / f"rl_metrics_{model_id}_{phase}.csv"
         df = load_csv(csv_path)
         # Fallback: if exact name doesn't match, try any rl_metrics_*_{phase}.csv
@@ -161,7 +161,7 @@ def load_multi_run_stats(results_dir: Path, phase: str, max_runs: int) -> list:
     for i in range(1, max_runs + 1):
         run_dir = results_dir / f"run_{i}"
         if not run_dir.exists():
-            break
+            continue
         stats_path = run_dir / f"fuzzer_stats_{phase}.txt"
         s = load_fuzzer_stats(stats_path)
         if s:
