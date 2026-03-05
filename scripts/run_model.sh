@@ -45,19 +45,24 @@ done
 
 [[ -n "$MODEL_ID" ]] || { echo "[-] --model-id is required"; exit 1; }
 
-# Derive all paths from MODEL_ID
-SHM_PATH="/tmp/rl_shm_${MODEL_ID}"
+# _skip models reuse the parent model's C mutator and SHM path
+BASE_MODEL_ID="${MODEL_ID%_skip}"   # strip _skip suffix (no-op if absent)
+TRAIN_FREQ=1
+if [[ "$MODEL_ID" != "$BASE_MODEL_ID" ]]; then
+    TRAIN_FREQ=4
+fi
+
+# Derive all paths — mutator/SHM use BASE_MODEL_ID, everything else uses MODEL_ID
+SHM_PATH="/tmp/rl_shm_${BASE_MODEL_ID}"
 AFL_FUZZ="${AFL_DIR}/afl-fuzz"
 AFL_INC="${AFL_DIR}/include"
 DICT="${REPO_ROOT}/dictionaries/target.dict"
-MUTATOR_SO="${REPO_ROOT}/bin/mutator_${MODEL_ID}.so"
+MUTATOR_SO="${REPO_ROOT}/bin/mutator_${BASE_MODEL_ID}.so"
 MODEL_PT="${REPO_ROOT}/bin/rl_${MODEL_ID}.pt"
 AFL_TRAIN_DIR="${REPO_ROOT}/outputs/${MODEL_ID}"
 AFL_EVAL_DIR="${REPO_ROOT}/outputs_eval/${MODEL_ID}"
 PLOTS_DIR="${REPO_ROOT}/plots/${MODEL_ID}"
 LABEL="${MODEL_ID^^}"   # uppercase for log tags (m0_0 → M0_0)
-# Fix: bash ${..^^} converts _ to uppercase too, but we want M0_0 not M0_0
-# Actually m0_0^^  gives M0_0 which is fine.
 
 mkdir -p "${REPO_ROOT}/bin" "$PLOTS_DIR" \
          "${REPO_ROOT}/outputs" "${REPO_ROOT}/outputs_eval"
@@ -100,9 +105,9 @@ DICT_FLAG=""; [[ -f "$DICT" ]] && DICT_FLAG="-x $DICT"
 
 # ── Build mutator ─────────────────────────────────────────────────────────────
 if [[ $NO_BUILD -eq 0 ]]; then
-    log "Compiling src/mutator_${MODEL_ID}.c → $MUTATOR_SO"
+    log "Compiling src/mutator_${BASE_MODEL_ID}.c → $MUTATOR_SO"
     clang -O2 -shared -fPIC -I"${AFL_INC}" \
-        -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_${MODEL_ID}.c"
+        -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_${BASE_MODEL_ID}.c"
     log "Mutator compiled OK"
 else
     [[ -f "$MUTATOR_SO" ]] || die "--no-build but $MUTATOR_SO not found"
@@ -119,6 +124,7 @@ if [[ $EVAL_ONLY -eq 0 ]]; then
         --model-id "$MODEL_ID" \
         --mode train --model "$MODEL_PT" \
         --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
+        --train-freq "$TRAIN_FREQ" \
         $( [[ $NO_PLATEAU -eq 1 ]] && echo "--no-plateau" ) &
     RL_PID=$!
     log "RL server PID $RL_PID"
@@ -154,7 +160,8 @@ log "Seeding eval from original corpus: $EVAL_SEEDS"
 "$PYTHON" "${REPO_ROOT}/scripts/rl_server.py" \
     --model-id "$MODEL_ID" \
     --mode eval --model "$MODEL_PT" \
-    --eval-steps "$EVAL_STEPS" --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" &
+    --eval-steps "$EVAL_STEPS" --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
+    --train-freq "$TRAIN_FREQ" &
 RL_PID=$!
 log "RL eval server PID $RL_PID"
 sleep 2

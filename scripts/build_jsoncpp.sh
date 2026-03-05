@@ -19,7 +19,7 @@
 #   dictionaries/target.dict     — FuzzBench/jsoncpp dictionary (54 entries)
 #   inputs/                      — 4 seed JSON files
 #   outputs/                     — empty, ready for AFL++
-#   plots/                       — empty, for plot_metrics.py
+#   plots/                       — empty, for compare_metrics.py
 
 set -euo pipefail
 
@@ -55,11 +55,6 @@ echo "[*] Checking prerequisites..."
 
 [ -d "$RL_FUZZER" ] || {
     echo "[-] rl-fuzzer not found at $RL_FUZZER"
-    exit 1
-}
-
-[ -f "$RL_FUZZER/src/mutator.c" ] || {
-    echo "[-] src/mutator.c not found in $RL_FUZZER"
     exit 1
 }
 
@@ -190,13 +185,8 @@ fi
 CLANG_BIN="$LLVM_BIN/clang"
 [ -x "$CLANG_BIN" ] || CLANG_BIN="clang"
 
-"$CLANG_BIN" $LIB_FLAGS -O2 -fPIC \
-    -I "$AFL_ROOT/include" \
-    src/mutator.c \
-    -o bin/rl_mutator.so 2>&1
-
-[ -f "$RL_FUZZER/bin/rl_mutator.so" ] || { echo "[-] Mutator compilation failed."; exit 1; }
-echo "[+] bin/rl_mutator.so built."
+# Note: model-specific mutators (mutator_m0_0.so, etc.) are compiled
+# by each run_m*.sh script — no generic mutator build needed here.
 
 # ── Set up directory structure ────────────────────────────────────────────────
 echo "[*] Setting up directories..."
@@ -244,6 +234,6 @@ echo "[+]  outputs_eval/       clean"
 echo "[+] ============================================"
 echo ""
 echo "     Next steps:"
-echo "       Train : bash scripts/train_rl.sh"
-echo "       Eval  : bash scripts/eval_rl.sh"
+echo "       Full experiment : bash scripts/run_experiment.sh"
+echo "       Eval only      : bash scripts/run_experiment.sh --skip-train"
 echo ""

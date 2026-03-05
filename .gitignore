@@ -1,72 +1,44 @@
-# --- Compilation Artifacts (C/C++) ---
-bin/
-*.o
-*.so
-*.dylib
-*.dSYM
-*.out
+# === Build & Compilation ===
+bin/*.so
+bin/*.dylib
+bin/*.pt
+bin/*.o
+bin/*.out
+*.dSYM/
 .vscode/
 
-# --- Python Artifacts ---
+# === Python ===
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
 .venv/
+venv/
 env/
 .pytest_cache/
 
-# --- AFL++ Fuzzing Outputs ---
-outputs/
-
-# --- Runtime Data & Logs ---
-rl_metrics.csv
-constraints.json
-fuzzer_stats
-plot_data
-
-# --- Generated Dictionaries & Seeds ---
-dictionaries/target.dict
-inputs/seed.txt
-
-# --- Generated Plots ---
-plots/*.png
-
-# --- OS Specific ---
-.DS_Store
-Thumbs.db
-
-# Build outputs
-bin/
+# === AFL++ Fuzzing Outputs ===
 outputs/
 outputs_eval/
 outputs_baseline/
+
+# === Generated Data ===
 plots/
-
-# Model checkpoints
-*.pt
-
-# Training metrics
+comparison_results/
 *.csv
-# AFL++ runtime
-/tmp/rl_shm
 
-# Seeds and corpus (large, reproducible via build script)
-inputs/
+# === Runtime ===
+/tmp/rl_shm*
+fuzzer_stats
 
-# Python
-.venv/
-__pycache__/
-*.pyc
+# === Generated Seeds & Dictionaries ===
+dictionaries/target.dict
+inputs/seed.txt
 
-# Zip files
+# === Archives & Temp ===
 *.zip
-
-# Temporary files
 *.tmp
 *.bak
 
-# OS
+# === OS ===
 .DS_Store
-
-comparison_results/
+Thumbs.db

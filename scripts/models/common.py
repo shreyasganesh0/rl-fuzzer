@@ -171,4 +171,4 @@ def create_shm(shm_path, shm_size):
 
 def shm_write_action(shm, action, seq, action_off, action_seq_off):
     shm.seek(action_off); shm.write(struct.pack("=i", action))
-    shm.seek(action_seq_off); shm.write(struct.pack("=I", seq)); shm.flush()
+    shm.seek(action_seq_off); shm.write(struct.pack("=I", seq))

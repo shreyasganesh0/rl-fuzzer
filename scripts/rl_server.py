@@ -31,6 +31,9 @@ def main():
     ap.add_argument("--results-dir", default=".")
     ap.add_argument("--no-plateau",  action="store_true",
                     help="Disable coverage-plateau early stopping")
+    ap.add_argument("--train-freq", type=int, default=1,
+                    help="Train every N steps (default: 1). "
+                         "Action selection still runs every step.")
     args = ap.parse_args()
 
     mod = importlib.import_module(f"models.{args.model_id}")
@@ -47,7 +50,7 @@ def main():
                          f"rl_metrics_{args.model_id}_{'eval' if is_eval else 'train'}.csv")
 
     print(f"[+] {label}  mode={tag}  state={mod.STATE_SIZE}  actions={ACTION_SIZE}  "
-          f"train_steps={args.train_steps}"
+          f"train_steps={args.train_steps}  train_freq={args.train_freq}"
           + ("  [no-plateau]" if args.no_plateau else ""))
 
     shm = create_shm(mod.SHM_PATH, mod.SHM_SIZE)
@@ -91,7 +94,7 @@ def main():
             state = mod.build_state(d, args.train_steps)
             rew, comps = compute_reward(cov, pcov, cr, pcr)
             loss = 0.0
-            if step > 0:
+            if step > 0 and step % args.train_freq == 0:
                 agent.remember(pstate, pact, rew, state); loss = agent.train_step()
 
             act = agent.select_action(state); aseq += 1

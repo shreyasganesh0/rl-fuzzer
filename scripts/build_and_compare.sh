@@ -147,7 +147,7 @@ if [[ $COMPARE_ONLY -eq 0 && $BASELINE_ONLY -eq 0 ]]; then
     for model in "${MODEL_LIST[@]}"; do
         model="${model// /}"
         case "$model" in
-            m0_0|m1_0|m1_1|m2) run_model "$model" ;;
+            m0_0|m1_0|m1_1|m2|m0_0_skip|m1_0_skip|m1_1_skip|m2_skip) run_model "$model" ;;
             *) log "  [warn] Unknown model '$model' — skipping" ;;
         esac
     done
@@ -250,10 +250,10 @@ fi
 log_sep; log "  Running comparison..."; log_sep
 
 COMPARE_ARGS=""
-for model in m0_0 m1_0 m1_1 m2; do
+for model in m0_0 m1_0 m1_1 m2 m0_0_skip m1_0_skip m1_1_skip m2_skip; do
     plots_dir="${REPO_ROOT}/plots/${model}"
     if [[ -d "$plots_dir" ]]; then
-        # Convert m0_0 → --m0-0 etc.
+        # Convert m0_0 → --m0-0, m0_0_skip → --m0-0-skip etc.
         flag="--${model//_/-}"
         COMPARE_ARGS="$COMPARE_ARGS $flag $plots_dir"
     fi
