@@ -1,6 +1,6 @@
-# MuoFuzz — RL-Guided AFL++ Fuzzer
+# RL-Guided AFL++ Fuzzer
 
-MuoFuzz is a research fuzzing framework that integrates **AFL++** with **Deep Q-Network (DQN)** agents to learn and optimise mutation strategies at runtime. Instead of applying mutations randomly, MuoFuzz treats mutation selection as a sequential decision problem and learns which of 47 AFL++ mutation primitives is most likely to discover new code coverage for a given execution context.
+This is a research fuzzing framework that integrates **AFL++** with **Deep Q-Network (DQN)** agents to learn and optimise mutation strategies at runtime. Instead of applying mutations randomly, It treats mutation selection as a sequential decision problem and learns which of 47 AFL++ mutation primitives is most likely to discover new code coverage for a given execution context.
 
 The project benchmarks **4 DQN model variants** (differing in state representation complexity) against a **plain AFL++ baseline**, producing comparison plots and statistical reports.
 
