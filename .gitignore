@@ -34,6 +34,11 @@ fuzzer_stats
 dictionaries/target.dict
 inputs/seed.txt
 
+# === Local dependency builds ===
+packages/xz/
+packages/libarchive/
+packages/local/
+
 # === Archives & Temp ===
 *.zip
 *.tmp
