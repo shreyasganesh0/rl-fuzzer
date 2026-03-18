@@ -33,7 +33,7 @@ BUILD_STEPS() {
 LINK_STEPS() {
     HARNESS="$FUZZBENCH/benchmarks/$FUZZBENCH_NAME/target.cc"
     if [[ ! -f "$HARNESS" ]]; then
-        HARNESS="$SRC_DIR/contrib/libtests/pngfuzz.c"
+        HARNESS="$SRC_DIR/contrib/oss-fuzz/libpng_read_fuzzer.cc"
     fi
 
     # Find the actual .a name
@@ -45,6 +45,7 @@ LINK_STEPS() {
     "$CXX" \
         $CXXFLAGS \
         -I"$SRC_DIR/install/include" \
+        -I"$SRC_DIR" \
         "$HARNESS" \
         "$PNG_LIB" \
         "$AFLDRIVER" \
