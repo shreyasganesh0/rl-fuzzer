@@ -38,6 +38,12 @@ import numpy as np
 import pandas as pd
 
 try:
+    from scipy.stats import mannwhitneyu
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
+try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -50,16 +56,18 @@ except ImportError:
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-MODELS = ["m0_0", "m1_0", "m1_1", "m2",
-          "m0_0_skip", "m1_0_skip", "m1_1_skip", "m2_skip"]
+MODELS = ["m0_0", "m1_0", "m1_1", "m1_2", "m2",
+          "m0_0_skip", "m1_0_skip", "m1_1_skip", "m1_2_skip", "m2_skip"]
 MODEL_LABELS = {
     "m0_0":         "M0_0 (3-metric)",
     "m1_0":         "M1_0 (full-edge dist, 12)",
     "m1_1":         "M1_1 (visited-edge dist, 13)",
+    "m1_2":         "M1_2 (visited-edge + input buf, 64)",
     "m2":           "M2 (per-mutator mag, 97)",
     "m0_0_skip":    "M0_0_SKIP (3-metric, freq=4)",
     "m1_0_skip":    "M1_0_SKIP (full-edge dist, freq=4)",
     "m1_1_skip":    "M1_1_SKIP (visited-edge dist, freq=4)",
+    "m1_2_skip":    "M1_2_SKIP (visited-edge + input buf, freq=4)",
     "m2_skip":      "M2_SKIP (per-mutator mag, freq=4)",
     "baseline":     "Baseline (plain AFL++)",
 }
@@ -67,10 +75,12 @@ MODEL_COLORS = {
     "m0_0":         "#4e79a7",
     "m1_0":         "#f28e2b",
     "m1_1":         "#59a14f",
+    "m1_2":         "#af7aa1",
     "m2":           "#e15759",
     "m0_0_skip":    "#76b7b2",
     "m1_0_skip":    "#edc948",
     "m1_1_skip":    "#b07aa1",
+    "m1_2_skip":    "#d4a6c8",
     "m2_skip":      "#ff9da7",
     "baseline":     "#888888",
 }
@@ -340,8 +350,116 @@ def summarise(df, phase: str, run_dfs: list = None) -> dict:
             gained = s.get("coverage_gained", 0)
             s["coverage_per_second"] = gained / elapsed_total
             s["elapsed_seconds"]     = elapsed_total
+    # Coverage AUC (area under coverage-over-time curve, normalized by elapsed time)
+    if "coverage" in df.columns and "elapsed_seconds" in df.columns and len(df) > 1:
+        if run_dfs:
+            per_run_auc = []
+            for rdf in run_dfs:
+                if "coverage" in rdf.columns and "elapsed_seconds" in rdf.columns and len(rdf) > 1:
+                    per_run_auc.append(float(np.trapz(rdf["coverage"], rdf["elapsed_seconds"])))
+            if per_run_auc:
+                s["coverage_auc"] = float(np.mean(per_run_auc))
+                s["coverage_auc_std"] = float(np.std(per_run_auc))
+        else:
+            s["coverage_auc"] = float(np.trapz(df["coverage"], df["elapsed_seconds"]))
+
     s["total_steps"] = len(df)
     return s
+
+
+def vargha_delaney_a12(x, y) -> float:
+    """Compute Vargha-Delaney A12 effect size.
+
+    A12 = P(X > Y) + 0.5 * P(X == Y).
+    A12 > 0.5 means x tends to be larger; A12 < 0.5 means y tends to be larger.
+    """
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    nx, ny = len(x), len(y)
+    if nx == 0 or ny == 0:
+        return 0.5
+    more = np.sum(x[:, None] > y[None, :])
+    equal = np.sum(x[:, None] == y[None, :])
+    return float((more + 0.5 * equal) / (nx * ny))
+
+
+def a12_magnitude(a12: float) -> str:
+    """Interpret A12 effect size: negligible / small / medium / large."""
+    d = abs(a12 - 0.5)
+    if d < 0.06:
+        return "negligible"
+    if d < 0.14:
+        return "small"
+    if d < 0.21:
+        return "medium"
+    return "large"
+
+
+def compute_pairwise_stats(all_data: dict, phase: str) -> list:
+    """Compute pairwise Mann-Whitney U + A12 for coverage_gained across all model pairs.
+
+    all_data maps model_id → list of per-run coverage_gained values.
+    Returns list of dicts with keys: model_a, model_b, a12, a12_mag, p_value, n_a, n_b.
+    """
+    results = []
+    model_ids = sorted(all_data.keys())
+    for i, a in enumerate(model_ids):
+        for b in model_ids[i+1:]:
+            xa, xb = all_data[a], all_data[b]
+            if len(xa) < 2 or len(xb) < 2:
+                continue
+            a12 = vargha_delaney_a12(xa, xb)
+            row = {"model_a": a, "model_b": b,
+                   "a12": a12, "a12_mag": a12_magnitude(a12),
+                   "n_a": len(xa), "n_b": len(xb)}
+            if HAS_SCIPY:
+                try:
+                    stat, p = mannwhitneyu(xa, xb, alternative="two-sided")
+                    row["p_value"] = float(p)
+                    row["significant"] = p < 0.05
+                except ValueError:
+                    row["p_value"] = float("nan")
+                    row["significant"] = False
+            results.append(row)
+    return results
+
+
+def get_per_run_coverage_gained(data: dict, phase: str) -> list:
+    """Extract per-run coverage_gained values from a loaded model dataset."""
+    run_dfs = data.get(f"df_{phase}_runs", [])
+    vals = []
+    for rdf in run_dfs:
+        if "coverage" in rdf.columns and not rdf.empty:
+            vals.append(int(rdf["coverage"].max()) - int(rdf["coverage"].iloc[0]))
+    return vals
+
+
+def get_per_run_coverage_auc(data: dict, phase: str) -> list:
+    """Extract per-run coverage AUC values from a loaded model dataset."""
+    run_dfs = data.get(f"df_{phase}_runs", [])
+    vals = []
+    for rdf in run_dfs:
+        if ("coverage" in rdf.columns and "elapsed_seconds" in rdf.columns
+                and len(rdf) > 1):
+            vals.append(float(np.trapz(rdf["coverage"], rdf["elapsed_seconds"])))
+    return vals
+
+
+# ── Corpus metrics from fuzzer_stats ──────────────────────────────────────────
+
+def extract_corpus_metrics(stats: dict) -> dict:
+    """Extract corpus-related metrics from a fuzzer_stats dict."""
+    m = {}
+    for key in ("corpus_count", "corpus_favored", "corpus_variable",
+                "pending_favs", "pending_total", "max_depth",
+                "saved_crashes", "saved_hangs", "total_crashes",
+                "edges_found", "cycles_done", "cycles_wo_finds"):
+        v = stats.get(key)
+        if v is not None:
+            try:
+                m[key] = int(v)
+            except ValueError:
+                pass
+    return m
 
 
 # ── Smoothing helper ───────────────────────────────────────────────────────────
@@ -458,7 +576,7 @@ def plot_stability(datasets: list, phase: str, out_dir: Path, multi_run: bool = 
     fig, axes = plt.subplots(1, 2, figsize=(14, 4), sharey=False)
     plotted = False
     for d in datasets:
-        if d["id"] not in ("m1_0", "m1_1"):
+        if d["id"] not in ("m1_0", "m1_1", "m1_2"):
             continue
         df = d.get(f"df_{phase}")
         if df is None:
@@ -794,6 +912,50 @@ def write_report(summaries: dict, afl_stats: dict, out_path: Path,
                 f"({ps['top_action_pct']:.1f}%)"
             )
 
+        # Coverage AUC
+        lines += ["", "  Coverage AUC (area under coverage-time curve):", ""]
+        any_auc = False
+        for mid in all_mids:
+            ps    = summaries.get(mid, {}).get(phase, {})
+            label = MODEL_LABELS.get(mid, mid)
+            if "coverage_auc" in ps:
+                auc_str = f"{ps['coverage_auc']:,.0f}"
+                if "coverage_auc_std" in ps and ps["coverage_auc_std"] > 0:
+                    auc_str += f" ± {ps['coverage_auc_std']:,.0f}"
+                lines.append(f"  {label:<36}  {auc_str} edge·seconds")
+                any_auc = True
+        if not any_auc:
+            lines.append("  (No elapsed_seconds data available)")
+
+        # Corpus metrics from fuzzer_stats
+        lines += ["", "  Corpus metrics (from fuzzer_stats):", ""]
+        any_corpus = False
+        for mid in all_mids:
+            fs    = afl_stats.get(mid, {}).get(phase, {})
+            label = MODEL_LABELS.get(mid, mid)
+            if not fs:
+                continue
+            cm = extract_corpus_metrics(fs)
+            if cm:
+                parts = []
+                if "corpus_count" in cm:
+                    parts.append(f"corpus={cm['corpus_count']}")
+                if "corpus_favored" in cm:
+                    parts.append(f"favored={cm['corpus_favored']}")
+                if "edges_found" in cm:
+                    parts.append(f"edges={cm['edges_found']}")
+                if "cycles_done" in cm:
+                    parts.append(f"cycles={cm['cycles_done']}")
+                if "saved_crashes" in cm:
+                    parts.append(f"crashes={cm['saved_crashes']}")
+                if "saved_hangs" in cm:
+                    parts.append(f"hangs={cm['saved_hangs']}")
+                if parts:
+                    lines.append(f"  {label:<36}  {', '.join(parts)}")
+                    any_corpus = True
+        if not any_corpus:
+            lines.append("  (No fuzzer_stats data available)")
+
         # AFL++ fuzzer_stats
         lines += ["", "  AFL++ fuzzer_stats:", ""]
         for mid in all_mids:
@@ -810,6 +972,39 @@ def write_report(summaries: dict, afl_stats: dict, out_path: Path,
                 f"execs={execs}  speed={speed}/s  "
                 f"unique_crashes={crashes}  hangs={hangs}"
             )
+
+        # Statistical tests (multi-run only, need per-run data)
+        if multi_run:
+            # Gather per-run coverage_gained for pairwise tests
+            per_run_gains = {}
+            for d in _report_datasets:
+                mid = d["id"]
+                vals = get_per_run_coverage_gained(d, phase)
+                if vals:
+                    per_run_gains[mid] = vals
+
+            if len(per_run_gains) >= 2:
+                lines += ["", "  Statistical tests (Mann-Whitney U + Vargha-Delaney A12):", ""]
+                lines.append(f"  {'Model A':<20} {'Model B':<20} {'A12':>6} {'Effect':>12} "
+                             + ("{'p-value':>10} {'Sig':>4}" if HAS_SCIPY else ""))
+                lines.append("  " + "-" * 72)
+                pairwise = compute_pairwise_stats(per_run_gains, phase)
+                for row in pairwise:
+                    la = MODEL_LABELS.get(row["model_a"], row["model_a"])[:20]
+                    lb = MODEL_LABELS.get(row["model_b"], row["model_b"])[:20]
+                    line = (f"  {la:<20} {lb:<20} {row['a12']:>6.3f} {row['a12_mag']:>12}")
+                    if HAS_SCIPY and "p_value" in row:
+                        sig = "yes" if row.get("significant") else "no"
+                        line += f" {row['p_value']:>10.4f} {sig:>4}"
+                    lines.append(line)
+                lines.append("")
+                lines.append("  A12 > 0.5 → Model A tends to outperform Model B")
+                lines.append("  A12 < 0.5 → Model B tends to outperform Model A")
+                if not HAS_SCIPY:
+                    lines.append("  (Install scipy for p-values: pip install scipy)")
+            else:
+                lines += ["", "  Statistical tests: need ≥2 models with ≥2 runs each"]
+
         lines += [""]
 
     lines += [SEP, "  END OF REPORT", SEP]
@@ -835,8 +1030,12 @@ def main():
                     help="results dir for M0_0_SKIP")
     ap.add_argument("--m1-0-skip", dest="dir_m1_0_skip", default=None,
                     help="results dir for M1_0_SKIP")
+    ap.add_argument("--m1-2",      dest="dir_m1_2",      default=None,
+                    help="results dir for M1_2  (default: results/m1_2)")
     ap.add_argument("--m1-1-skip", dest="dir_m1_1_skip", default=None,
                     help="results dir for M1_1_SKIP")
+    ap.add_argument("--m1-2-skip", dest="dir_m1_2_skip", default=None,
+                    help="results dir for M1_2_SKIP")
     ap.add_argument("--m2-skip",   dest="dir_m2_skip",   default=None,
                     help="results dir for M2_SKIP")
     ap.add_argument("--baseline",  dest="dir_baseline", default=None,
@@ -861,6 +1060,7 @@ def main():
         "m0_0": Path(args.dir_m0_0 or "results/m0_0"),
         "m1_0": Path(args.dir_m1_0 or "results/m1_0"),
         "m1_1": Path(args.dir_m1_1 or "results/m1_1"),
+        "m1_2": Path(args.dir_m1_2 or "results/m1_2"),
         "m2":   Path(args.dir_m2   or "results/m2"),
     }
     for skip_id in ("m0_0_skip", "m1_0_skip", "m1_1_skip", "m2_skip"):
@@ -942,8 +1142,30 @@ def main():
                  datasets=datasets)
 
     # ── JSON summary ──────────────────────────────────────────────────────────
+    json_out = {"summaries": summaries}
+
+    # Add pairwise statistical tests to JSON if multi-run
+    if args.multi_run:
+        for phase in phases:
+            per_run_gains = {}
+            per_run_aucs = {}
+            for d in datasets:
+                mid = d["id"]
+                gains = get_per_run_coverage_gained(d, phase)
+                if gains:
+                    per_run_gains[mid] = gains
+                aucs = get_per_run_coverage_auc(d, phase)
+                if aucs:
+                    per_run_aucs[mid] = aucs
+            if len(per_run_gains) >= 2:
+                json_out[f"pairwise_coverage_{phase}"] = compute_pairwise_stats(
+                    per_run_gains, phase)
+            if len(per_run_aucs) >= 2:
+                json_out[f"pairwise_auc_{phase}"] = compute_pairwise_stats(
+                    per_run_aucs, phase)
+
     json_path = out_dir / "comparison_summary.json"
-    json_path.write_text(json.dumps(summaries, indent=2, default=str))
+    json_path.write_text(json.dumps(json_out, indent=2, default=str))
     print(f"  [json]   {json_path}")
 
     # ── Console table ─────────────────────────────────────────────────────────
