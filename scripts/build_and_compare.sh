@@ -147,7 +147,7 @@ if [[ $COMPARE_ONLY -eq 0 && $BASELINE_ONLY -eq 0 ]]; then
     for model in "${MODEL_LIST[@]}"; do
         model="${model// /}"
         case "$model" in
-            m0_0|m1_0|m1_1|m2|m0_0_skip|m1_0_skip|m1_1_skip|m2_skip) run_model "$model" ;;
+            m0_0|m1_0|m1_1|m1_2|m2|m0_0_skip|m1_0_skip|m1_1_skip|m1_2_skip|m2_skip) run_model "$model" ;;
             *) log "  [warn] Unknown model '$model' — skipping" ;;
         esac
     done
@@ -177,10 +177,12 @@ run_baseline() {
     if [[ "$BASELINE_TIME_SECONDS" -gt 0 ]]; then
         # Time-based: AFL++ runs for exactly N seconds via -V flag (flushes stats on clean exit)
         AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+        AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
             "$AFL_FUZZ" -V "$BASELINE_TIME_SECONDS" -i "$SEEDS" -o "$BASE_DIR" $DICT_FLAG -- "$TARGET" @@ &
     else
         # Steps-based: AFL++ self-terminates at EVAL_STEPS (-E flag)
         AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+        AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
             "$AFL_FUZZ" -E "$EVAL_STEPS" -i "$SEEDS" -o "$BASE_DIR" $DICT_FLAG -- "$TARGET" @@ &
     fi
     local AFL_BL_PID=$!
