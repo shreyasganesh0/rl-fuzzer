@@ -107,12 +107,15 @@ class DQNAgent:
         self.buffer = ReplayBuffer(REPLAY_SIZE)
         self.epsilon = 0.0 if eval_mode else EPSILON_START
         self._train_steps = 0; self._total_steps = 0
+        # Pre-allocate input tensor for inference (avoid per-step allocation)
+        self._infer_buf = torch.zeros(1, state_size, dtype=torch.float32,
+                                      device=self.device)
 
     def select_action(self, state):
         if not self.eval_mode and random.random() < self.epsilon:
             return random.randrange(ACTION_SIZE)
-        s = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        with torch.no_grad(): return int(self.online(s).argmax(1).item())
+        self._infer_buf[0] = torch.as_tensor(state, dtype=torch.float32)
+        with torch.no_grad(): return int(self.online(self._infer_buf).argmax(1).item())
 
     def _decay(self):
         f = min(self._total_steps / self._decay_steps, 1.0)
