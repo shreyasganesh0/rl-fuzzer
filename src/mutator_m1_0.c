@@ -255,7 +255,15 @@ static uint32_t count_coverage(afl_state_t *afl)
 {
     uint32_t n = 0, sz = afl->total_bitmap_size;
     const uint8_t *v = afl->virgin_bits;
-    for (uint32_t i = 0; i < sz; i++)
+    uint32_t i = 0;
+    for (; i + 8 <= sz; i += 8) {
+        uint64_t chunk;
+        memcpy(&chunk, v + i, 8);
+        if (chunk == 0xFFFFFFFFFFFFFFFFULL) continue;
+        for (int j = 0; j < 8; j++)
+            if (v[i + j] != 0xFF) n++;
+    }
+    for (; i < sz; i++)
         if (v[i] != 0xFF) n++;
     return n;
 }

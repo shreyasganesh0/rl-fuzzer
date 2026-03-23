@@ -178,11 +178,13 @@ static void shm_push_state(my_mutator_t *m,
     /* Write per-action normalised averages to SHM */
     volatile float *shm_en  = (volatile float *)((uint8_t *)m->shm + OFF_AVG_EN);
     volatile float *shm_dis = (volatile float *)((uint8_t *)m->shm + OFF_AVG_DIS);
+    static const double INV_MAP = 1.0 / (double)MAP_SIZE;
     for (int a = 0; a < ACTION_SIZE; a++) {
         uint64_t c = m->calls[a];
         if (c > 0) {
-            shm_en[a]  = (float)((double)m->enabled_mag[a]  / (double)c / (double)MAP_SIZE);
-            shm_dis[a] = (float)((double)m->disabled_mag[a] / (double)c / (double)MAP_SIZE);
+            double inv_c = 1.0 / (double)c;
+            shm_en[a]  = (float)((double)m->enabled_mag[a]  * inv_c * INV_MAP);
+            shm_dis[a] = (float)((double)m->disabled_mag[a] * inv_c * INV_MAP);
         } else {
             shm_en[a]  = 0.0f;
             shm_dis[a] = 0.0f;
@@ -220,7 +222,15 @@ static uint32_t count_coverage(afl_state_t *afl)
 {
     uint32_t n = 0, sz = afl->total_bitmap_size;
     const uint8_t *v = afl->virgin_bits;
-    for (uint32_t i = 0; i < sz; i++)
+    uint32_t i = 0;
+    for (; i + 8 <= sz; i += 8) {
+        uint64_t chunk;
+        memcpy(&chunk, v + i, 8);
+        if (chunk == 0xFFFFFFFFFFFFFFFFULL) continue;
+        for (int j = 0; j < 8; j++)
+            if (v[i + j] != 0xFF) n++;
+    }
+    for (; i < sz; i++)
         if (v[i] != 0xFF) n++;
     return n;
 }
