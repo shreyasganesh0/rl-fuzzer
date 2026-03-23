@@ -12,6 +12,8 @@
 #   --no-build        skip recompile
 #   --eval-only       skip training
 #   --no-plateau      disable plateau early-stopping
+#   --exp-dir     DIR experiment root (default: REPO_ROOT — fully backward compatible)
+#   --milestones  LIST comma-separated step counts passed through to rl_server.py
 
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,6 +29,8 @@ SEEDS="${REPO_ROOT}/inputs"
 NO_BUILD=0
 EVAL_ONLY=0
 NO_PLATEAU=0
+EXP_DIR=""
+MILESTONES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,6 +43,8 @@ while [[ $# -gt 0 ]]; do
         --no-build)    NO_BUILD=1;       shift   ;;
         --eval-only)   EVAL_ONLY=1;      shift   ;;
         --no-plateau)  NO_PLATEAU=1;     shift   ;;
+        --exp-dir)     EXP_DIR="$2";     shift 2 ;;
+        --milestones)  MILESTONES="$2";  shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -58,14 +64,25 @@ AFL_FUZZ="${AFL_DIR}/afl-fuzz"
 AFL_INC="${AFL_DIR}/include"
 DICT="${REPO_ROOT}/dictionaries/target.dict"
 MUTATOR_SO="${REPO_ROOT}/bin/mutator_${BASE_MODEL_ID}.so"
-MODEL_PT="${REPO_ROOT}/bin/rl_${MODEL_ID}.pt"
-AFL_TRAIN_DIR="${REPO_ROOT}/outputs/${MODEL_ID}"
-AFL_EVAL_DIR="${REPO_ROOT}/outputs_eval/${MODEL_ID}"
-PLOTS_DIR="${REPO_ROOT}/plots/${MODEL_ID}"
-LABEL="${MODEL_ID^^}"   # uppercase for log tags (m0_0 → M0_0)
 
-mkdir -p "${REPO_ROOT}/bin" "$PLOTS_DIR" \
-         "${REPO_ROOT}/outputs" "${REPO_ROOT}/outputs_eval"
+# When --exp-dir is set, redirect checkpoint/output/plots into that tree
+if [[ -n "$EXP_DIR" ]]; then
+    MODEL_PT="${EXP_DIR}/bin/rl_${MODEL_ID}.pt"
+    AFL_TRAIN_DIR="${EXP_DIR}/outputs/${MODEL_ID}"
+    AFL_EVAL_DIR="${EXP_DIR}/outputs_eval/${MODEL_ID}"
+    PLOTS_DIR="${EXP_DIR}/plots/${MODEL_ID}"
+    mkdir -p "${EXP_DIR}/bin" "$PLOTS_DIR" \
+             "${EXP_DIR}/outputs" "${EXP_DIR}/outputs_eval"
+else
+    MODEL_PT="${REPO_ROOT}/bin/rl_${MODEL_ID}.pt"
+    AFL_TRAIN_DIR="${REPO_ROOT}/outputs/${MODEL_ID}"
+    AFL_EVAL_DIR="${REPO_ROOT}/outputs_eval/${MODEL_ID}"
+    PLOTS_DIR="${REPO_ROOT}/plots/${MODEL_ID}"
+    mkdir -p "${REPO_ROOT}/bin" "$PLOTS_DIR" \
+             "${REPO_ROOT}/outputs" "${REPO_ROOT}/outputs_eval"
+fi
+
+LABEL="${MODEL_ID^^}"   # uppercase for log tags (m0_0 → M0_0)
 
 # Safe initial values — guards in cleanup prevent signalling PID 0
 AFL_PID=0
@@ -95,7 +112,7 @@ log "  train_steps=$TRAIN_STEPS  eval_steps=$EVAL_STEPS"
 log "======================================================"
 
 [[ -x "$AFL_FUZZ" ]] || die "afl-fuzz not found at $AFL_FUZZ  (set AFL_ROOT or --afl-dir)"
-[[ -x "$TARGET" ]]   || die "target not found: $TARGET  (run build_jsoncpp.sh first)"
+[[ -x "$TARGET" ]]   || die "target not found: $TARGET  (run build_benchmark.sh first)"
 [[ -d "$SEEDS" ]]    || die "seeds not found: $SEEDS"
 command -v "$PYTHON" >/dev/null || die "python3 not found"
 "$PYTHON" -c "import torch" 2>/dev/null || die "PyTorch not installed"
@@ -106,7 +123,7 @@ DICT_FLAG=""; [[ -f "$DICT" ]] && DICT_FLAG="-x $DICT"
 # ── Build mutator ─────────────────────────────────────────────────────────────
 if [[ $NO_BUILD -eq 0 ]]; then
     log "Compiling src/mutator_${BASE_MODEL_ID}.c → $MUTATOR_SO"
-    clang -O2 -shared -fPIC -I"${AFL_INC}" \
+    clang -O2 -march=native -ffast-math -shared -fPIC -I"${AFL_INC}" -lm \
         -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_${BASE_MODEL_ID}.c"
     log "Mutator compiled OK"
 else
@@ -125,13 +142,15 @@ if [[ $EVAL_ONLY -eq 0 ]]; then
         --mode train --model "$MODEL_PT" \
         --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
         --train-freq "$TRAIN_FREQ" \
-        $( [[ $NO_PLATEAU -eq 1 ]] && echo "--no-plateau" ) &
+        $( [[ $NO_PLATEAU -eq 1 ]] && echo "--no-plateau" ) \
+        $( [[ -n "$MILESTONES" ]] && echo "--milestones $MILESTONES" ) &
     RL_PID=$!
     log "RL server PID $RL_PID"
     sleep 2
 
     # shellcheck disable=SC2086
     AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+    AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
     AFL_CUSTOM_MUTATOR_LIBRARY="$MUTATOR_SO" AFL_CUSTOM_MUTATOR_ONLY=1 \
         "$AFL_FUZZ" -i "$SEEDS" -o "$AFL_TRAIN_DIR" $DICT_FLAG -- "$TARGET" @@ &
     AFL_PID=$!
@@ -168,6 +187,7 @@ sleep 2
 
 # shellcheck disable=SC2086
 AFL_AUTORESUME=1 AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 \
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
 AFL_CUSTOM_MUTATOR_LIBRARY="$MUTATOR_SO" AFL_CUSTOM_MUTATOR_ONLY=1 \
     "$AFL_FUZZ" -i "$EVAL_SEEDS" -o "$AFL_EVAL_DIR" $DICT_FLAG -- "$TARGET" @@ &
 AFL_PID=$!

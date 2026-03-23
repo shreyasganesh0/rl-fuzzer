@@ -7,7 +7,7 @@ Usage:
   python3 scripts/rl_server.py --model-id m2   --mode eval  --eval-steps 20000
 """
 
-import argparse, importlib, os, struct, sys, time
+import argparse, importlib, os, shutil, struct, sys, time
 
 # Allow `from models.<id> import ...` when invoked from any directory.
 sys.path.insert(0, os.path.dirname(__file__))
@@ -17,6 +17,15 @@ from models.common import (
     PlateauDetector, DQNAgent, compute_reward,
     create_shm, shm_write_action,
 )
+
+
+def _format_milestone(step: int) -> str:
+    """Format step count as human-readable tag: 500000 → '500k', 1000000 → '1m'."""
+    if step >= 1_000_000 and step % 1_000_000 == 0:
+        return f"{step // 1_000_000}m"
+    if step >= 1_000 and step % 1_000 == 0:
+        return f"{step // 1_000}k"
+    return str(step)
 
 
 def main():
@@ -34,7 +43,15 @@ def main():
     ap.add_argument("--train-freq", type=int, default=1,
                     help="Train every N steps (default: 1). "
                          "Action selection still runs every step.")
+    ap.add_argument("--milestones", default=None,
+                    help="Comma-separated step counts for checkpoint copies "
+                         "(e.g. 500000,1000000). Training only.")
     args = ap.parse_args()
+
+    # Parse milestone step counts (training only)
+    milestone_set = set()
+    if args.milestones:
+        milestone_set = {int(s.strip()) for s in args.milestones.split(",")}
 
     mod = importlib.import_module(f"models.{args.model_id}")
 
@@ -65,8 +82,8 @@ def main():
     zero_d = mod.zero_state_data()
     csv_header = ("step,reward,coverage_term,crash_term,loss,epsilon,"
                   f"coverage,crashes,action{mod.CSV_EXTRA_HEADER},elapsed_seconds\n")
-    with open(mpath, "w") as f:
-        f.write(csv_header)
+    csv_f = open(mpath, "w")
+    csv_f.write(csv_header)
 
     print(f"[+] {label} ready.  metrics={mpath}")
 
@@ -103,10 +120,10 @@ def main():
             if step % 100 == 0:
                 extra_csv = mod.csv_extra_fields(d, args)
                 elapsed = time.time() - start_time
-                with open(mpath, "a") as f:
-                    f.write(f"{step},{rew:.4f},{comps['coverage_term']:.4f},"
+                csv_f.write(f"{step},{rew:.4f},{comps['coverage_term']:.4f},"
                             f"{comps['crash_term']:.4f},{loss:.6f},{agent.epsilon:.4f},"
                             f"{cov},{cr},{act}{extra_csv},{elapsed:.2f}\n")
+                csv_f.flush()
                 extra_log = mod.log_extra(d, args)
                 print(f"[{label}-{tag}:{step:>7}] cov={cov:<5} ne={ne:<3} cr={cr} "
                       f"act={act:<2}({ACTION_COLUMNS[act]:<30}) "
@@ -115,6 +132,11 @@ def main():
 
             if not is_eval and step > 0 and step % 1000 == 0:
                 agent.save(args.model)
+            if not is_eval and milestone_set and step in milestone_set:
+                tag_ms = _format_milestone(step)
+                dst = f"{args.model}.{tag_ms}"
+                shutil.copy2(args.model, dst)
+                print(f"[+] Milestone checkpoint saved: {dst}")
             if not is_eval and plateau and plateau.update(cov, agent.epsilon, step):
                 stop = "coverage plateau"; break
 
@@ -123,6 +145,7 @@ def main():
     except KeyboardInterrupt:
         stop = "user interrupt"
     finally:
+        csv_f.close()
         if not is_eval: agent.save(args.model)
         print(f"\n{'='*58}\n  {label} {tag} done \u2014 {stop}")
         print(f"  steps={step:,}  cov={cov}  crashes={cr}  \u03b5={agent.epsilon:.4f}")
