@@ -255,44 +255,44 @@ summarize_benchmarks.py
 
 ---
 
-## Slide 13: Results — Coverage at 500K Steps (Early Advantage)
+## Slide 13: Results — Coverage Gained at 500K Steps
 
-### RL Models Show Early Coverage Lead
+### Same-Step Comparison (coverage gained)
 
 | Benchmark | M1_0 | M1_1 | M1_2 | Baseline |
 |-----------|------|------|------|----------|
-| jsoncpp | **230** | 89 | **313** | 0 |
-| freetype2 | **450** | 342 | 0 | 0 |
-| libxml2 | 971 | **1,213** | — | 0 |
-| re2 | **1,775** | 1,068 | 1,078 | 0 |
-| harfbuzz | 1,453 | 380 | **1,866** | 0 |
+| jsoncpp | 230 | 89 | 313 | **979** |
+| freetype2 | 450 | 342 | 0 | **1,467** |
+| libxml2 | 971 | **1,213** | 156 | 556 |
+| re2 | 1,775 | 1,068 | 1,078 | **6,359** |
+| harfbuzz | 1,453 | 380 | **1,866** | 1,494 |
 | libpng | 0 | 0 | 0 | 0 |
 
-**At 500K steps, RL models discover coverage while baseline finds 0 edges on most benchmarks.**
+**Baseline already leads at 500K steps on 3/5 benchmarks** (jsoncpp, freetype2, re2).
+RL models outperform baseline only on libxml2 (M1_1) and harfbuzz (M1_2).
 
-This happens because AFL++ spends early steps in deterministic stages (sequential
-bit/byte flips) which discover few new edges. The RL agent can skip directly to
-more productive mutations.
+Note: Baseline "step" = AFL++ execs_done, which jumps by millions between 1-second
+polls. Coverage at 500K execs is linearly interpolated from the surrounding data points.
 
 ---
 
-## Slide 14: Results — Coverage at 10M Steps (Convergence)
+## Slide 14: Results — Final Coverage at 10M Steps
 
-### Baseline Catches Up and Surpasses
+### Baseline Dominates at All Horizons
 
 | Benchmark | M1_0 | M1_1 | M1_2 | Baseline | BL (same-time) |
 |-----------|------|------|------|----------|----------------|
 | jsoncpp | 234 | 93 | 317 | **7,444** | **7,634** |
-| freetype2 | 864 | 399 | 57 | **7,674** | **8,493** |
-| libxml2 | 1,065 | 1,560 | — | **3,512** | **5,373** |
-| re2 | 2,505 | 1,335 | 1,301 | **22,937** | **23,343** |
+| freetype2 | 864 | 399 | 57 | **7,608** | **8,493** |
+| libxml2 | 1,065 | 1,560 | 250 | **3,512** | **5,505** |
+| re2 | 2,505 | 1,335 | 1,301 | **22,931** | **23,343** |
 | harfbuzz | 2,111 | 1,175 | 2,780 | **7,038** | **7,241** |
 | libpng | 4 | 4 | 4 | **72** | **72** |
 
-**At 10M steps, baseline outperforms all RL models on every benchmark.**
+**Baseline outperforms all RL models on every benchmark at every milestone.**
 
 The same-time baseline (running AFL++ for the same wall-clock duration as RL)
-performs even better, executing 10-50x more total test cases.
+performs even better, executing 10-30x more total test cases.
 
 ---
 
@@ -300,15 +300,15 @@ performs even better, executing 10-50x more total test cases.
 
 ### jsoncpp (JSON parser)
 - **Best RL**: M1_2 at 317 edges (vs baseline 7,444)
-- Coverage plateaus instantly for RL (by step 123K)
+- Coverage plateaus instantly for RL (by step 124K)
 - Baseline discovers 23x more edges
-- RL agent converges to single action: M1_0→FLIP_2BITS, M1_1→INT_2BE, M1_2→HAVOC_ARITH32
+- All agents converge to single action: M1_0→action#1, M1_1→action#18, M1_2→action#35
 
 ### freetype2 (Font renderer)
-- **Best RL**: M1_0 at 864 edges (vs baseline 7,674)
-- M1_0 shows late coverage jump (step 3.2M → 864 edges)
+- **Best RL**: M1_0 at 864 edges (vs baseline 7,608)
+- M1_0 shows late coverage jump (step 6.1M → 864 edges)
 - M1_2 discovers only 57 edges — input buffer features don't help here
-- Baseline reaches 6,533 edges by 2M steps, eventually 7,674
+- Baseline reaches 5,747 edges by 2M steps, eventually 7,608
 
 ---
 
@@ -317,14 +317,14 @@ performs even better, executing 10-50x more total test cases.
 ### libxml2 (XML parser)
 - **Best RL**: M1_1 at 1,560 edges (vs baseline 3,512)
 - M1_1 (visited-edge tracking) outperforms M1_0 (1,065) — edge visit info helps
-- M1_2 eval was lost to a crash, no data available
+- M1_2 achieves only 250 edges — input buffer features don't help here
 - xml.dict provides good dictionary — benefits both RL and baseline
 
 ### re2 (Regex engine)
-- **Best RL**: M1_0 at 2,505 edges (vs baseline 22,937)
+- **Best RL**: M1_0 at 2,505 edges (vs baseline 22,931)
 - Largest absolute gap — baseline finds 9x more edges
 - re2 has deep state space that rewards extensive corpus exploration
-- RL throughput: ~1,736 steps/s vs baseline 21,277 steps/s
+- RL throughput: ~1,736 steps/s vs baseline 19,069 steps/s
 
 ---
 
@@ -353,16 +353,17 @@ Higher = faster and/or higher coverage over the full eval duration.
 
 | Benchmark | M1_0 | M1_1 | M1_2 | Baseline |
 |-----------|------|------|------|----------|
-| jsoncpp | 844K | 329K | **1,196K** | 1,150K |
-| freetype2 | **3,718K** | 1,480K | 205K | 2,301K |
-| libxml2 | 5,181K | **6,911K** | — | 666K |
-| re2 | **14,066K** | 6,206K | 6,079K | 9,764K |
-| harfbuzz | 11,289K | 11,027K | **15,886K** | 3,188K |
+| jsoncpp | 844K | 329K | **1,196K** | 1,157K |
+| freetype2 | **3,718K** | 1,480K | 205K | 2,308K |
+| libxml2 | 5,181K | **6,911K** | 1,251K | 669K |
+| re2 | **14,066K** | 6,206K | 6,079K | 9,787K |
+| harfbuzz | 11,289K | 11,027K | **15,886K** | 3,195K |
 | libpng | **19K** | 14K | 14K | 10K |
 
 **Key insight**: RL models often have higher AUC than same-steps baseline
-despite lower final coverage. This is because RL finds coverage *earlier*,
-accumulating more area under the curve.
+despite lower final coverage. This is because RL runs for 10-30x longer
+wall-clock time (3,500-9,400s vs 137-493s), accumulating more area under
+the curve simply by running longer, not by finding coverage faster.
 
 ---
 
@@ -370,42 +371,42 @@ accumulating more area under the curve.
 
 ### The Throughput Gap
 
-| Benchmark | Baseline (steps/s) | M1_0 (steps/s) | Overhead |
+| Benchmark | Baseline (execs/s) | M1_0 (steps/s) | Overhead |
 |-----------|-------------------|-----------------|----------|
-| jsoncpp | 49,505 | 2,769 | **94%** |
-| freetype2 | 25,908 | 2,031 | **92%** |
-| libxml2 | 40,323 | 2,046 | **95%** |
-| re2 | 21,277 | 1,736 | **92%** |
-| harfbuzz | 20,243 | 1,858 | **91%** |
-| libpng | 72,464 | 2,123 | **97%** |
+| jsoncpp | 44,654 | 2,768 | **94%** |
+| freetype2 | 24,345 | 2,031 | **92%** |
+| libxml2 | 39,203 | 2,046 | **95%** |
+| re2 | 19,069 | 1,736 | **91%** |
+| harfbuzz | 19,750 | 1,858 | **91%** |
+| libpng | 63,850 | 2,123 | **97%** |
 
 **Average overhead: 93% throughput reduction.**
 
 The RL agent processes ~2,000 steps/s regardless of target, while baseline
-throughput varies 20K-72K steps/s. The bottleneck is the SHM communication
+throughput varies 19K-64K steps/s. The bottleneck is the SHM communication
 + Python DQN inference on every single mutation step.
 
 ---
 
 ## Slide 20: Head-to-Head Model Comparison
 
-### Pairwise Wins at 10M Steps (coverage)
+### Pairwise Wins at 10M Steps (coverage gained)
 
 |  | M1_0 | M1_1 | M1_2 | Baseline |
 |--|------|------|------|----------|
-| **M1_0** | — | 4/6 | 2/5 | 0/6 |
-| **M1_1** | 1/6 | — | 2/5 | 0/6 |
-| **M1_2** | 2/5 | 2/5 | — | 0/5 |
-| **Baseline** | **6/6** | **6/6** | **5/5** | — |
+| **M1_0** | — | 4/6 | 3/6 | 0/6 |
+| **M1_1** | 1/6 | — | 2/6 | 0/6 |
+| **M1_2** | 2/6 | 3/6 | — | 0/6 |
+| **Baseline** | **5/6** | **5/6** | **5/6** | — |
 
-### Pairwise Wins at 500K Steps (early advantage)
+### Pairwise Wins at 500K Steps
 
 |  | M1_0 | M1_1 | M1_2 | Baseline |
 |--|------|------|------|----------|
-| **M1_0** | — | 4/6 | 2/5 | 1/6 |
-| **M1_1** | 1/6 | — | 2/5 | 1/6 |
-| **M1_2** | 2/5 | 2/5 | — | 0/5 |
-| **Baseline** | 5/6 | 5/6 | **5/5** | — |
+| **M1_0** | — | 4/6 | 3/6 | 1/6 |
+| **M1_1** | 1/6 | — | 2/6 | 1/6 |
+| **M1_2** | 2/6 | 3/6 | — | 1/6 |
+| **Baseline** | **4/6** | **4/6** | **4/6** | — |
 
 M1_0 is the most consistent RL model. Baseline dominates at all horizons.
 
@@ -417,16 +418,16 @@ M1_0 is the most consistent RL model. Baseline dominates at all horizons.
 
 | Benchmark | BL (same-time) | Best RL | Best Model | RL Wins? |
 |-----------|---------------|---------|------------|----------|
-| jsoncpp | 7,634 | 317 | M1_2 | **NO** |
-| freetype2 | 8,493 | 864 | M1_0 | **NO** |
-| libxml2 | 5,373 | 1,560 | M1_1 | **NO** |
-| re2 | 23,343 | 2,505 | M1_0 | **NO** |
-| harfbuzz | 7,241 | 2,780 | M1_2 | **NO** |
-| libpng | 72 | 4 | M1_0 | **NO** |
+| jsoncpp | 5,983 | 313 | M1_2 | **NO** |
+| freetype2 | 7,707 | 793 | M1_0 | **NO** |
+| libxml2 | 4,948 | 1,465 | M1_1 | **NO** |
+| re2 | 15,768 | 2,230 | M1_0 | **NO** |
+| harfbuzz | 4,089 | 1,985 | M1_2 | **NO** |
+| libpng | 0 | 0 | — | TIE |
 
 **RL loses on all benchmarks when controlling for wall-clock time.**
 
-The same-time baseline executes 10-50x more test cases because it doesn't
+The same-time baseline executes 10-30x more test cases because it doesn't
 have the SHM + inference overhead. Raw execution speed dominates.
 
 ---
@@ -483,24 +484,27 @@ Any RL-for-fuzzing approach must solve the throughput problem to be competitive.
 
 ### What We Learned
 
-1. **RL can discover coverage faster in early steps** — at 500K steps, RL models
-   find non-zero coverage while baseline often finds 0. The RL agent skips
-   AFL++'s slow deterministic stages.
+1. **Baseline dominates at all horizons** — at both 500K and 10M steps,
+   plain AFL++ outperforms RL models on most benchmarks (4/6 at 500K, 5/6
+   at 10M). The "early RL advantage" previously reported was a data artifact
+   from sparse baseline polling (step jumps from ~36 to ~2M between polls).
 
-2. **Baseline always wins at scale** — at 10M steps and same-time comparison,
-   plain AFL++ outperforms all RL models on all 6 benchmarks.
+2. **RL wins only on select benchmarks** — M1_1 outperforms baseline on
+   libxml2 at 500K steps (1,213 vs 556 gained), and M1_2 on harfbuzz
+   (1,866 vs 1,494). These are the only cases where RL beats baseline.
 
 3. **Throughput is the bottleneck** — 93% average throughput reduction from
-   SHM + inference overhead. The RL policy quality cannot compensate for
-   executing 10-50x fewer mutations.
+   SHM + inference overhead. RL runs at ~2,000 steps/s while baseline
+   runs at 19K-64K execs/s, a 10-30x gap.
 
-4. **Sparse rewards lead to degenerate policies** — agents converge to
-   single-action strategies, suggesting the reward signal is insufficient
-   for learning nuanced mutation preferences.
+4. **Sparse rewards lead to degenerate policies** — all agents converge to
+   single-action strategies (100% of steps use one mutation). Coverage
+   stagnates within the first 0.1-1% of the run on most benchmarks.
 
 5. **Input-aware features (M1_2) show promise on harfbuzz** — M1_2 achieves
    the best RL coverage (2,780 edges) and highest AUC (15.9M) on harfbuzz,
-   suggesting input characteristics can inform mutation selection.
+   suggesting input characteristics can inform mutation selection for
+   complex structured-input targets.
 
 ---
 
@@ -528,9 +532,9 @@ Any RL-for-fuzzing approach must solve the throughput problem to be competitive.
 
 - **Multi-run aggregation**: Run each configuration 3-5 times with different
   seeds for statistical significance (Mann-Whitney U tests).
-- **Better seed corpora**: Use FuzzBench's full seed sets where available;
-  libpng results are uninformative due to minimal seeds.
 - **Longer horizons**: Some benchmarks may need 50M+ steps for RL to converge.
+- **Address policy collapse**: Investigate entropy regularization, action masking,
+  or forced exploration to prevent single-action degenerate policies.
 
 ---
 
@@ -561,9 +565,11 @@ Any RL-for-fuzzing approach must solve the throughput problem to be competitive.
 ### Summary
 
 We evaluated DQN-based mutation selection for AFL++ across 6 FuzzBench
-benchmarks. While RL models show an early coverage advantage, the 93%
-throughput overhead makes them uncompetitive at scale. Future work should
-focus on eliminating the inference bottleneck and improving the reward signal.
+benchmarks. Plain AFL++ outperforms all RL models at every milestone on
+most benchmarks. The 93% throughput overhead (10-30x fewer executions)
+and degenerate single-action policies make RL uncompetitive. Future work
+should focus on eliminating the inference bottleneck and improving the
+reward signal to prevent policy collapse.
 
 ### Code & Data
 

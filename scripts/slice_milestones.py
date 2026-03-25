@@ -35,13 +35,43 @@ def format_milestone(step: int) -> str:
 
 
 def slice_csv_by_step(csv_path: str, max_step: int) -> pd.DataFrame | None:
-    """Load CSV and filter to rows where step <= max_step."""
+    """Load CSV and filter to rows where step <= max_step.
+
+    For sparse baseline CSVs (where step = execs_done and jumps by millions
+    between polls), the last included row may be far below max_step.  When
+    the gap exceeds 90% of max_step and a row above the milestone exists,
+    we linearly interpolate coverage/crashes/elapsed_seconds at max_step so
+    that milestone comparisons reflect a realistic estimate rather than
+    frozen calibration values.
+    """
     if not os.path.exists(csv_path):
         return None
     df = pd.read_csv(csv_path)
     if df.empty or "step" not in df.columns:
         return None
-    return df[df["step"] <= max_step].copy()
+
+    below = df[df["step"] <= max_step].copy()
+
+    # Interpolate when the last captured step is far below the milestone
+    if not below.empty and below["step"].iloc[-1] < max_step * 0.1:
+        above = df[df["step"] > max_step]
+        if not above.empty:
+            row_lo = below.iloc[-1]
+            row_hi = above.iloc[0]
+            span = row_hi["step"] - row_lo["step"]
+            if span > 0:
+                frac = (max_step - row_lo["step"]) / span
+                interp_row = row_lo.copy()
+                interp_row["step"] = max_step
+                for col in ["coverage", "crashes", "elapsed_seconds"]:
+                    if col in df.columns:
+                        lo_val = float(row_lo[col])
+                        hi_val = float(row_hi[col])
+                        interp_row[col] = lo_val + frac * (hi_val - lo_val)
+                below = pd.concat([below, interp_row.to_frame().T],
+                                  ignore_index=True)
+
+    return below
 
 
 def slice_csv_by_time(csv_path: str, max_time: float) -> pd.DataFrame | None:
