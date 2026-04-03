@@ -1,0 +1,28 @@
+=== Bug Reachability Verification ===
+Date: 2026-04-03T17:43:28-04:00
+
+--- CVE-2016-1762 (xml017): Heap overread in xmlNextChar ---
+
+PoC file: /home/shreyasganesh/projects/rl-fuzzer/experiments/differential/build/poc_cve_2016_1762.xml (60 bytes)
+xml017_buggy (v2.9.3): EXIT CODE 0 (no crash — PoC may not trigger this specific path)
+xml017_fixed (v2.9.4): EXIT CODE 0 (clean — as expected)
+
+--- CVE-2017-5130 (xml005): Integer overflow in xmlMemoryStrdup ---
+No public PoC available. Running a quick 2-minute AFL++ campaign.
+
+WARNING: core_pattern is '|/usr/share/apport/apport -p%p -s%s -c%c -d%d -P%P -u%u -g%g -F%F -- %E' (should be 'core' for AFL++)
+Run: echo core | sudo tee /proc/sys/kernel/core_pattern
+Skipping AFL++ verification run.
+
+============================================
+=== Verification Summary ===
+============================================
+
+CVE-2016-1762 (xml017):
+  Buggy (v2.9.3): exit=0
+  Fixed (v2.9.4): exit=0
+
+CVE-2017-5130 (xml005):
+  Skipped (core_pattern not set)
+
+Full log: /home/shreyasganesh/projects/rl-fuzzer/experiments/differential/build/verification.log
