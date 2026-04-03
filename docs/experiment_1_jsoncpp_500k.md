@@ -156,22 +156,10 @@ action selection.
 
 ---
 
-## Comparison with Experiment 2 (Multi-Benchmark, 10M Steps)
+## Comparison with Experiment 2
 
-| Aspect | Experiment 1 | Experiment 2 |
-|--------|-------------|-------------|
-| Target | jsoncpp only | 6 benchmarks |
-| Steps | 500K | 10M |
-| Models | M0_0, M1_0, M1_1, M2 + skip | M1_0, M1_1, M1_2 |
-| Multi-run | 5 eval runs | 1 eval run |
-| Best RL (jsoncpp) | M1_0_skip: 626 ± 15 | M1_2: 317 |
-| Baseline (jsoncpp) | 5,606 ± 81 | 7,444 |
-| RL throughput | 2,374-2,850 steps/s | 2,644-2,822 steps/s |
-| Baseline throughput | 59,306 execs/s | 44,654 execs/s |
-
-The lower RL coverage at 10M steps in Experiment 2 (317 vs 626 at 500K) reflects
-a different model (M1_2 vs M1_0_skip) and different training conditions (10M train
-steps with full degeneration vs 350K plateau-stopped training).
+See [experiment_2_multi_benchmark_10m.md](experiment_2_multi_benchmark_10m.md)
+for the full multi-benchmark 10M-step experiment report.
 
 ---
 
