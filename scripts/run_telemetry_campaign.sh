@@ -60,8 +60,7 @@ echo ""
 # Compile mutator if needed
 if [[ ! -f "$MUTATOR_SO" ]] || [[ "$REPO_ROOT/src/mutator_telemetry.c" -nt "$MUTATOR_SO" ]]; then
     echo "[*] Compiling mutator_telemetry.c..."
-    "$AFL_ROOT/afl-clang-fast" \
-        -O2 -shared -fPIC -g \
+    clang -O2 -shared -fPIC -g \
         -I "$AFL_ROOT/include" \
         -o "$MUTATOR_SO" \
         "$REPO_ROOT/src/mutator_telemetry.c" \

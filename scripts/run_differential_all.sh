@@ -77,8 +77,9 @@ echo "[+] All 4 targets found"
 
 # Compile telemetry mutator
 echo "[*] Compiling mutator_telemetry.c..."
-"$AFL_ROOT/afl-clang-fast" \
-    -O2 -shared -fPIC -g \
+# Use plain clang (NOT afl-clang-fast) — mutator .so must not contain
+# AFL++ instrumentation symbols like __afl_area_ptr
+clang -O2 -shared -fPIC -g \
     -I "$AFL_ROOT/include" \
     -o "$MUTATOR_SO" "$MUTATOR_SRC" -lm 2>/dev/null
 echo "[+] Compiled: $MUTATOR_SO"
