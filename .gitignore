@@ -47,3 +47,8 @@ packages/local/
 # === OS ===
 .DS_Store
 Thumbs.db
+
+# Compiled differential targets (large ASAN binaries)
+experiments/differential/targets/*/target
+experiments/differential/targets/*/build_info.json
+

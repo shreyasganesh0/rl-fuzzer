@@ -1,12 +1,12 @@
 /*
- * mutator_m_star.c  —  RL mutator / Model M* (differential-informed)
+ * mutator_m3_0.c  —  RL mutator / Model M3_0 (differential-informed)
  *
  * PLACEHOLDER: Currently uses M1_1's visited-edge stability features (13-dim).
- * After Phase 3 differential analysis produces m_star_feature_spec.json,
+ * After Phase 3 differential analysis produces m3_0_feature_spec.json,
  * this mutator should be regenerated with the actual differential-informed
  * features selected by the analysis pipeline.
  *
- * SHM layout (256 bytes, /tmp/rl_shm_m_star) — same offsets as M1_0:
+ * SHM layout (256 bytes, /tmp/rl_shm_m3_0) — same offsets as M1_0:
  *
  *   STATE REGION [0..127]
  *     [0]   state_seq     u32
@@ -48,7 +48,7 @@
 
 /* ── Constants ────────────────────────────────────────────────────────────── */
 
-#define SHM_PATH      "/tmp/rl_shm_m_star"
+#define SHM_PATH      "/tmp/rl_shm_m3_0"
 #define SHM_SIZE      256
 #define MAP_SIZE      65536
 #define MAX_MUTATED_SIZE (1024 * 1024)
@@ -69,7 +69,7 @@
 #define OFF_SUM_DIS      64
 #define OFF_SUM_SQ_DIS   72
 #define OFF_SUM_STAB     80
-#define OFF_TOTAL_EDGES  84   /* = num_visited for M_STAR */
+#define OFF_TOTAL_EDGES  84   /* = num_visited for M3_0 */
 #define OFF_STEP_COUNT   88
 
 #define OFF_ACTION_SEQ  128
@@ -138,7 +138,7 @@ static inline volatile float *f32_at(void *b, size_t o) {
 }
 
 /*
- * shm_push_state_m_star
+ * shm_push_state_m3_0
  *
  * Same O(MAP_SIZE) pass as M1_0, but statistics are accumulated only for
  * edges where enabled[i]+disabled[i] > 0 (visited set).
@@ -449,21 +449,21 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed)
     m->disabled   = calloc(MAP_SIZE, sizeof(uint32_t));
     m->prev_trace = calloc(MAP_SIZE, 1);
     if (!m->enabled || !m->disabled || !m->prev_trace) {
-        perror("[-] M_STAR table calloc");
+        perror("[-] M3_0 table calloc");
         free(m->enabled); free(m->disabled); free(m->prev_trace);
         free(m->mutated_buf); free(m);
         return NULL;
     }
 
     m->shm_fd = open(SHM_PATH, O_RDWR | O_CREAT, 0600);
-    if (m->shm_fd < 0) { perror("[-] M_STAR SHM open"); m->shm = NULL; return m; }
-    if (ftruncate(m->shm_fd, SHM_SIZE) < 0) perror("[-] M_STAR SHM ftruncate");
+    if (m->shm_fd < 0) { perror("[-] M3_0 SHM open"); m->shm = NULL; return m; }
+    if (ftruncate(m->shm_fd, SHM_SIZE) < 0) perror("[-] M3_0 SHM ftruncate");
 
     m->shm = mmap(NULL, SHM_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, m->shm_fd, 0);
     if (m->shm == MAP_FAILED) {
-        perror("[-] M_STAR SHM mmap"); m->shm = NULL;
+        perror("[-] M3_0 SHM mmap"); m->shm = NULL;
     } else {
-        printf("[+] M_STAR mutator: SHM at %s  (visited-only edge stats)\n", SHM_PATH);
+        printf("[+] M3_0 mutator: SHM at %s  (visited-only edge stats)\n", SHM_PATH);
     }
 
     if (m->shm)

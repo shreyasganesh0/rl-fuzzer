@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_m_star_experiment.sh — Full evaluation of M* model on differential targets
+# run_m3_0_experiment.sh — Full evaluation of M* model on differential targets
 #
 # 1. Train M* on xml005_buggy for 500K steps (both DQN and bandit variants)
 # 2. Evaluate on xml005_buggy (in-distribution) and xml017_buggy (transfer)
@@ -7,7 +7,7 @@
 # 4. 5 eval runs per configuration for statistical significance
 #
 # Usage:
-#   bash scripts/run_m_star_experiment.sh [--train-steps N] [--eval-steps N] [--eval-runs N]
+#   bash scripts/run_m3_0_experiment.sh [--train-steps N] [--eval-steps N] [--eval-runs N]
 
 set -euo pipefail
 
@@ -79,16 +79,16 @@ run_model() {
 
 # ── Phase 1: Train M* (DQN variant) on xml005_buggy ──────────────────────
 echo "=== Training M* (DQN) on ${TRAIN_TARGET} ==="
-MSTAR_DQN_DIR="$RESULTS_DIR/m_star_dqn"
+MSTAR_DQN_DIR="$RESULTS_DIR/m3_0_dqn"
 mkdir -p "$MSTAR_DQN_DIR"
-run_model "m_star" "dqn" "$TRAIN_BIN" "$MSTAR_DQN_DIR" "train"
+run_model "m3_0" "dqn" "$TRAIN_BIN" "$MSTAR_DQN_DIR" "train"
 
 # ── Phase 2: Train M* (Bandit variant) on xml005_buggy ────────────────────
 echo ""
 echo "=== Training M* (Bandit) on ${TRAIN_TARGET} ==="
-MSTAR_BAN_DIR="$RESULTS_DIR/m_star_bandit"
+MSTAR_BAN_DIR="$RESULTS_DIR/m3_0_bandit"
 mkdir -p "$MSTAR_BAN_DIR"
-run_model "m_star" "bandit" "$TRAIN_BIN" "$MSTAR_BAN_DIR" "train"
+run_model "m3_0" "bandit" "$TRAIN_BIN" "$MSTAR_BAN_DIR" "train"
 
 # ── Phase 3: Train M1_0 (comparison baseline) on xml005_buggy ────────────
 echo ""
@@ -111,17 +111,17 @@ for EVAL_TARGET in xml005_buggy xml017_buggy; do
         echo ""
         echo "--- Eval run $RUN/$EVAL_RUNS on $EVAL_TARGET ---"
 
-        for VARIANT in m_star_dqn m_star_bandit m1_0_compare; do
+        for VARIANT in m3_0_dqn m3_0_bandit m1_0_compare; do
             SRC_DIR="$RESULTS_DIR/$VARIANT"
             EVAL_DIR="$RESULTS_DIR/eval_${EVAL_TARGET}/${VARIANT}/run_${RUN}"
             mkdir -p "$EVAL_DIR/bin" "$EVAL_DIR/plots/$(echo "$VARIANT" | sed 's/_compare//' | sed 's/_dqn//' | sed 's/_bandit//')"
 
             # Determine model-id and algorithm
-            local_model_id="m_star"
+            local_model_id="m3_0"
             local_algo=""
-            if [[ "$VARIANT" == "m_star_dqn" ]]; then
+            if [[ "$VARIANT" == "m3_0_dqn" ]]; then
                 local_algo="dqn"
-            elif [[ "$VARIANT" == "m_star_bandit" ]]; then
+            elif [[ "$VARIANT" == "m3_0_bandit" ]]; then
                 local_algo="bandit"
             else
                 local_model_id="m1_0"
@@ -166,8 +166,8 @@ echo ""
 echo "Results: $RESULTS_DIR/"
 echo ""
 echo "Structure:"
-echo "  m_star_dqn/     — M* trained with DQN"
-echo "  m_star_bandit/  — M* trained with contextual bandit"
+echo "  m3_0_dqn/     — M* trained with DQN"
+echo "  m3_0_bandit/  — M* trained with contextual bandit"
 echo "  m1_0_compare/   — M1_0 comparison model"
 echo "  eval_xml005_buggy/{variant}/run_N/  — in-distribution eval"
 echo "  eval_xml017_buggy/{variant}/run_N/  — transfer eval"

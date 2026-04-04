@@ -1,11 +1,11 @@
-"""Model M* — Differential-informed feature selection.
+"""Model M3_0 — Differential-informed feature selection.
 
 This is a PLACEHOLDER using M1_1's 13-dim state as a baseline.
 After running the differential analysis pipeline (Phase 3), regenerate
-this module from the m_star_feature_spec.json produced by
-scripts/analysis/design_m_star_features.py.
+this module from the m3_0_feature_spec.json produced by
+scripts/analysis/design_m3_0_features.py.
 
-The actual M* features will be determined by which telemetry features
+The actual M3_0 features will be determined by which telemetry features
 best discriminate buggy from fixed versions of the target program.
 """
 
@@ -16,9 +16,9 @@ from .common import MAX_COVERAGE, MAX_NEW_EDGES, MAX_CRASHES
 # ── Default config (placeholder — matches M1_1 for initial testing) ──────
 STATE_SIZE      = 13
 SHM_SIZE        = 256
-SHM_PATH        = "/tmp/rl_shm_m_star"
-MODEL_PATH_DEFAULT = "rl_m_star.pt"
-LABEL           = "M_STAR"
+SHM_PATH        = "/tmp/rl_shm_m3_0"
+MODEL_PATH_DEFAULT = "rl_m3_0.pt"
+LABEL           = "M3_0"
 HIDDEN_LAYERS   = [128, 128, 64]
 
 _LOG_MAP_SIZE   = math.log1p(65536.0)
@@ -50,7 +50,7 @@ def _try_load_spec():
     """Attempt to load feature spec from analysis output."""
     spec_path = os.path.join(os.path.dirname(__file__), "..", "..",
                              "experiments", "differential", "analysis",
-                             "m_star_feature_spec.json")
+                             "m3_0_feature_spec.json")
     if os.path.exists(spec_path):
         with open(spec_path) as f:
             return json.load(f)

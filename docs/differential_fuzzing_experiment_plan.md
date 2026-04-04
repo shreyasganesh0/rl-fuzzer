@@ -11,7 +11,7 @@ This document was reviewed and 10 ambiguities/contradictions were fixed:
 | 3 | FuzzBench path `libxml2-v2.9.2` doesn't match existing recipe `libxml2_xml` | Changed all references to `libxml2_xml` |
 | 4 | CVE-2016-1762 fix commit was unspecified | Pinned to `v2.9.4` tag, fix commit `a7a94612aa3b16779e2c74e1fa353b5d9786c602` |
 | 5 | Telemetry mutator can't observe AFL++ internal stages with MUTATOR_ONLY=0 | Changed to MUTATOR_ONLY=1 with random mutation selection (full attribution) |
-| 6 | Separate `rl_server_m_star.py` breaks unified server architecture | Integrated: add `ContextualBanditAgent` to `common.py`, `--algorithm` to `rl_server.py` |
+| 6 | Separate `rl_server_m3_0.py` breaks unified server architecture | Integrated: add `ContextualBanditAgent` to `common.py`, `--algorithm` to `rl_server.py` |
 | 7 | `packages/local/` for liblzma doesn't exist | Check system `liblzma-dev` first, build from source only if needed |
 | 8 | Bitmap snapshot dumps `afl->shm.map` which resets between execs | Changed to `cumulative_map` maintained in mutator; `total_edges` uses `virgin_bits` |
 | 9 | Harness compatibility across v2.9.3-v2.9.5 unverified | Try FuzzBench `target.cc`, fall back to `fuzz/xml.c`; STOP on failure |
@@ -45,8 +45,8 @@ Supporting infrastructure:
 Build an instrumented differential fuzzing experiment that:
 1. Fuzzes a BUGGY vs FIXED version of libxml2 using vanilla AFL++ (no RL) while collecting rich coverage telemetry
 2. Analyzes the differential telemetry to identify features that correlate with bug-proximity
-3. Designs and trains a new model M* using those features within the existing RL setup
-4. Evaluates whether M* finds bugs faster than baseline AFL++ and existing M1_0 model
+3. Designs and trains a new model M3_0 using those features within the existing RL setup
+4. Evaluates whether M3_0 finds bugs faster than baseline AFL++ and existing M1_0 model
 
 ## Phase 0: Prerequisites & Environment Verification
 
@@ -286,33 +286,33 @@ This is the core analysis script. It reads the telemetry CSVs from Phase 2 and p
 - `analysis/differential_edges/` — edge set differences per timepoint
 - `analysis/summary.md` — human-readable summary of findings
 
-### Step 3.2: Write `analysis/design_m_star_features.py`
+### Step 3.2: Write `analysis/design_m3_0_features.py`
 
 Based on the feature importance report from 3.1.5, this script:
 1. Reads the ranked feature list
 2. Selects the top-K features (configurable, default K=15) that show statistically significant divergence between buggy and fixed
-3. Outputs a feature specification file `analysis/m_star_feature_spec.json` that defines:
+3. Outputs a feature specification file `analysis/m3_0_feature_spec.json` that defines:
    - Feature name, source (which telemetry field), normalization method
-   - State vector dimension for M*
+   - State vector dimension for M3_0
    - Recommended network architecture (based on dimension — use [128,128,64] for dim ≤ 20, [256,256,128] for dim > 20)
 
-## Phase 4: Model M* Implementation
+## Phase 4: Model M3_0 Implementation
 
-### Step 4.1: Write `src/mutator_m_star.c`
+### Step 4.1: Write `src/mutator_m3_0.c`
 
 A new C mutator that:
 1. Collects the features identified in Phase 3 from AFL++'s runtime state
-2. Writes them to SHM at `/tmp/rl_shm_m_star` (same IPC protocol as existing mutators)
+2. Writes them to SHM at `/tmp/rl_shm_m3_0` (same IPC protocol as existing mutators)
 3. Reads back an action (0-46) from the RL server
 4. Applies the selected mutation
 
-This should follow the exact same pattern as `src/mutator_m1_0.c` but with the feature vector defined by `m_star_feature_spec.json`. The feature computation logic goes in the C mutator's `afl_custom_fuzz()` function.
+This should follow the exact same pattern as `src/mutator_m1_0.c` but with the feature vector defined by `m3_0_feature_spec.json`. The feature computation logic goes in the C mutator's `afl_custom_fuzz()` function.
 
-### Step 4.2: Write `scripts/models/m_star.py`
+### Step 4.2: Write `scripts/models/m3_0.py`
 
-A standard model module following the `m1_2.py` pattern. Exports all required constants and functions (`STATE_SIZE`, `SHM_SIZE`, `SHM_PATH`, `shm_read()`, `build_state()`, etc.) based on the feature spec from `analysis/m_star_feature_spec.json`.
+A standard model module following the `m1_2.py` pattern. Exports all required constants and functions (`STATE_SIZE`, `SHM_SIZE`, `SHM_PATH`, `shm_read()`, `build_state()`, etc.) based on the feature spec from `analysis/m3_0_feature_spec.json`.
 
-Register `"m_star"` in `scripts/models/__init__.py`.
+Register `"m3_0"` in `scripts/models/__init__.py`.
 
 ### Step 4.3: Modify `scripts/models/common.py` — add `ContextualBanditAgent`
 
@@ -330,20 +330,20 @@ Add `--algorithm {dqn,bandit}` argument (default: `dqn`):
 - `bandit`: Uses new `ContextualBanditAgent`
 - Model-id dispatch via `importlib.import_module` remains unchanged
 
-**Why integrate instead of separate server**: The existing architecture uses a single `rl_server.py` with model-id dispatch. Creating a separate `rl_server_m_star.py` would duplicate the training loop, CSV logging, SHM protocol, and milestone handling. Adding `--algorithm` is a minimal change that preserves the established pattern.
+**Why integrate instead of separate server**: The existing architecture uses a single `rl_server.py` with model-id dispatch. Creating a separate `rl_server_m3_0.py` would duplicate the training loop, CSV logging, SHM protocol, and milestone handling. Adding `--algorithm` is a minimal change that preserves the established pattern.
 
 ### Step 4.5: M* uses existing `scripts/run_model.sh`
 
 No new run script needed. M* is invoked via:
 ```bash
-bash scripts/run_model.sh --model-id m_star --algorithm bandit --train-steps 500000
+bash scripts/run_model.sh --model-id m3_0 --algorithm bandit --train-steps 500000
 ```
 
-### Step 4.4: Write `scripts/run_m_star_experiment.sh`
+### Step 4.4: Write `scripts/run_m3_0_experiment.sh`
 
 The full evaluation script:
-1. Train M* on the BUGGY version of xml005 for 500K steps
-2. Evaluate M* on:
+1. Train M3_0 on the BUGGY version of xml005 for 500K steps
+2. Evaluate M3_0 on:
    - xml005_buggy (same bug, in-distribution) — does it find the bug faster?
    - xml017_buggy (different bug, transfer) — does the learned policy generalize?
 3. Compare against:
@@ -352,7 +352,7 @@ The full evaluation script:
 4. Metrics: time-to-first-crash, coverage-over-time, mutation diversity (action entropy)
 5. 5 eval runs per configuration for statistical significance
 
-Output: `experiments/differential/results/m_star_evaluation_report.md`
+Output: `experiments/differential/results/m3_0_evaluation_report.md`
 
 ## Summary of Files to Create
 
@@ -367,15 +367,15 @@ Output: `experiments/differential/results/m_star_evaluation_report.md`
 
 ### Analysis (Phase 3):
 - `scripts/analysis/differential_analysis.py`
-- `scripts/analysis/design_m_star_features.py`
+- `scripts/analysis/design_m3_0_features.py`
 
-### Model M* (Phase 4):
-- `src/mutator_m_star.c`
-- `scripts/models/m_star.py`
-- `scripts/run_m_star_experiment.sh`
+### Model M3_0 (Phase 4):
+- `src/mutator_m3_0.c`
+- `scripts/models/m3_0.py`
+- `scripts/run_m3_0_experiment.sh`
 - Modified: `scripts/models/common.py` (add `ContextualBanditAgent`)
 - Modified: `scripts/rl_server.py` (add `--algorithm` flag)
-- Modified: `scripts/models/__init__.py` (add `m_star` to `MODEL_IDS`)
+- Modified: `scripts/models/__init__.py` (add `m3_0` to `MODEL_IDS`)
 
 ## Execution Order
 
@@ -384,7 +384,7 @@ Run phases sequentially. After each phase, the user will verify outputs and prov
 1. Phase 1 → user verifies builds work and bugs are reachable
 2. Phase 2 → user runs campaigns (12+ hours of compute), provides telemetry CSVs
 3. Phase 3 → user reviews analysis, confirms feature selection makes sense
-4. Phase 4 → user runs M* training and evaluation
+4. Phase 4 → user runs M3_0 training and evaluation
 
 ## Critical Implementation Notes
 
@@ -567,13 +567,13 @@ Generated by `differential_analysis.py` alongside its results. Documents:
 - All derived features: name, formula, input columns, normalization, and rationale for inclusion
 - Which features were excluded and why
 
-**`experiments/differential/analysis/m_star_feature_spec.json`**
+**`experiments/differential/analysis/m3_0_feature_spec.json`**
 
-The feature specification for M*, generated by `design_m_star_features.py`. Must be fully self-contained — a future Claude instance reading ONLY this file should be able to implement the C mutator and Python RL server:
+The feature specification for M3_0, generated by `design_m3_0_features.py`. Must be fully self-contained — a future Claude instance reading ONLY this file should be able to implement the C mutator and Python RL server:
 
 ```json
 {
-  "model_name": "m_star",
+  "model_name": "m3_0",
   "state_dim": 15,
   "action_dim": 47,
   "recommended_architecture": {
@@ -612,4 +612,4 @@ The feature specification for M*, generated by `design_m_star_features.py`. Must
 
 ### Why this matters:
 
-Without these metadata files, the telemetry is just columns of numbers. A future Claude instance (or you, or your professor) reading `mut_23_new_edges = 7` has no way to know that mutation 23 is "havoc: random byte XOR" or that the value 7 is high or low for this experiment. The EXPERIMENT_MANIFEST.json ties every CSV back to exactly which binary was fuzzed, which commit it came from, and whether it's the buggy or fixed version. The COLUMN_DICTIONARY.md makes every column interpretable without needing access to the C source code. The m_star_feature_spec.json makes it possible to implement M* from the spec alone without needing the analysis conversation.
+Without these metadata files, the telemetry is just columns of numbers. A future Claude instance (or you, or your professor) reading `mut_23_new_edges = 7` has no way to know that mutation 23 is "havoc: random byte XOR" or that the value 7 is high or low for this experiment. The EXPERIMENT_MANIFEST.json ties every CSV back to exactly which binary was fuzzed, which commit it came from, and whether it's the buggy or fixed version. The COLUMN_DICTIONARY.md makes every column interpretable without needing access to the C source code. The m3_0_feature_spec.json makes it possible to implement M3_0 from the spec alone without needing the analysis conversation.

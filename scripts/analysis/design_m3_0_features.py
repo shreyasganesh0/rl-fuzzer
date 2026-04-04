@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-design_m_star_features.py — Generate M* feature specification from differential analysis.
+design_m3_0_features.py — Generate M3_0 feature specification from differential analysis.
 
 Reads the feature importance report produced by differential_analysis.py and
-outputs a fully self-contained feature specification for the M* model, including
+outputs a fully self-contained feature specification for the M3_0 model, including
 SHM layout, normalization details, and C implementation hints.
 
 Usage:
-    python3 scripts/analysis/design_m_star_features.py \
+    python3 scripts/analysis/design_m3_0_features.py \
         --report experiments/differential/analysis/feature_importance_report.json \
-        --output experiments/differential/analysis/m_star_feature_spec.json \
+        --output experiments/differential/analysis/m3_0_feature_spec.json \
         [--top-k 15] \
         [--alpha 0.05]
 """
@@ -366,7 +366,7 @@ def build_shm_layout(feature_specs: list) -> dict:
 
 def build_spec(selected: list, excluded: list, report: dict,
                alpha: float) -> dict:
-    """Build the complete m_star_feature_spec.json structure."""
+    """Build the complete m3_0_feature_spec.json structure."""
 
     state_dim = len(selected)
 
@@ -405,9 +405,9 @@ def build_spec(selected: list, excluded: list, report: dict,
                      f"[256, 256, 128] architecture (same as M1_2, M2)")
 
     spec = {
-        "model_name": "m_star",
+        "model_name": "m3_0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "generator": "design_m_star_features.py",
+        "generator": "design_m3_0_features.py",
         "source_report": os.path.basename(
             report.get("_source_path", "feature_importance_report.json")),
         "selection_criteria": {
@@ -439,7 +439,7 @@ def print_summary(spec: dict):
     W = 72
     print()
     print("=" * W)
-    print("  M* Feature Specification Summary")
+    print("  M3_0 Feature Specification Summary")
     print("=" * W)
     print()
     print(f"  State dimension:    {spec['state_dim']}")
@@ -514,14 +514,14 @@ def print_summary(spec: dict):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Generate M* feature specification from differential "
+        description="Generate M3_0 feature specification from differential "
                     "analysis feature importance report.")
     ap.add_argument(
         "--report", required=True,
         help="Path to feature_importance_report.json from differential_analysis.py")
     ap.add_argument(
         "--output", required=True,
-        help="Output path for m_star_feature_spec.json")
+        help="Output path for m3_0_feature_spec.json")
     ap.add_argument(
         "--top-k", type=int, default=15,
         help="Maximum number of features to select (default: 15)")

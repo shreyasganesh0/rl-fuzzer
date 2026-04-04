@@ -31,7 +31,7 @@ def _format_milestone(step: int) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-id",    required=True,
-                    help="Model ID: m0_0, m1_0, m1_1, m1_2, m2, m_star")
+                    help="Model ID: m0_0, m1_0, m1_1, m1_2, m2, m3_0")
     ap.add_argument("--mode",        choices=["train", "eval"], default="train")
     ap.add_argument("--model",       default=None,
                     help="Checkpoint path (default: derived from model-id)")
