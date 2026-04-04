@@ -68,66 +68,33 @@ echo "[+] Harness: $BENCHMARK_DIR/target.cc"
 echo ""
 echo "=== Copying FuzzBench assets ==="
 
-if [[ ! -f "$EXP_DIR/build/harness.cc" ]] || [[ $CLEAN -eq 1 ]]; then
-    cp "$BENCHMARK_DIR/target.cc" "$EXP_DIR/build/harness.cc"
-    # Add missing includes for portability (FuzzBench assumes OSS-Fuzz base image)
-    sed -i '/#include <string>/i #include <cstdint>\n#include <cstddef>' "$EXP_DIR/build/harness.cc"
-    echo "[+] Harness copied from FuzzBench and patched (added cstdint/cstddef)"
-else
-    echo "[+] Using existing harness: $EXP_DIR/build/harness.cc"
-fi
-echo "[+] Harness: $EXP_DIR/build/harness.cc"
-echo "    SHA256: $(sha256sum "$EXP_DIR/build/harness.cc" | awk '{print $1}')"
+# Harness: byte-identical copy from FuzzBench (NEVER modify this file).
+# Portability fixes (missing uint8_t/size_t) are handled via -include flags
+# at compile time, not by patching the source.
+cp "$BENCHMARK_DIR/target.cc" "$EXP_DIR/build/harness.cc"
+echo "[+] Harness: byte-identical copy of FuzzBench libxml2_xml/target.cc"
+echo "    SHA256 (FuzzBench): $(sha256sum "$BENCHMARK_DIR/target.cc" | awk '{print $1}')"
+echo "    SHA256 (local):     $(sha256sum "$EXP_DIR/build/harness.cc" | awk '{print $1}')"
 
-# Seeds: FuzzBench build.sh generates them from the source tree's fuzz/ dir.
-# For our standalone harness, create minimal XML seeds.
-if [[ ! -f "$SEEDS_DIR/seed_simple.xml" ]] || [[ $CLEAN -eq 1 ]]; then
-    echo '<a/>'                      > "$SEEDS_DIR/seed_simple.xml"
-    echo '<a b="c">d</a>'           > "$SEEDS_DIR/seed_attr.xml"
-    echo '<?xml version="1.0"?><root><child>text</child></root>' > "$SEEDS_DIR/seed_full.xml"
-    echo '<a>&amp;&lt;&gt;</a>'      > "$SEEDS_DIR/seed_entities.xml"
-    echo "[+] Seeds created in: $SEEDS_DIR/ (4 files)"
-else
-    echo "[+] Seeds already exist in: $SEEDS_DIR/"
+# Seeds: canonical test/*.xml from the libxml2 source tree (FuzzBench-pinned commit).
+# These are already checked into experiments/differential/seeds/ — verify they exist.
+SEED_COUNT=$(ls "$SEEDS_DIR"/*.xml 2>/dev/null | wc -l)
+if [[ $SEED_COUNT -eq 0 ]]; then
+    echo "[-] STOP: No seed files in $SEEDS_DIR/"
+    echo "    Seeds must come from libxml2/test/*.xml — see provenance audit."
+    exit 1
 fi
-echo "    Count: $(ls "$SEEDS_DIR"/*.xml 2>/dev/null | wc -l) files"
+echo "[+] Seeds: $SEEDS_DIR/ ($SEED_COUNT files from libxml2/test/*.xml)"
+echo "    Total size: $(du -sh "$SEEDS_DIR" | awk '{print $1}')"
 
-# Dictionary: copy from FuzzBench benchmark dir or libxml2 source
-DICT_SRC=""
-if [[ -f "$BENCHMARK_DIR/xml.dict" ]]; then
-    DICT_SRC="$BENCHMARK_DIR/xml.dict"
-elif [[ -f "$BENCHMARK_DIR/fuzz.dict" ]]; then
-    DICT_SRC="$BENCHMARK_DIR/fuzz.dict"
+# Dictionary: canonical fuzz/xml.dict from the libxml2 source tree.
+# Already checked into experiments/differential/dictionaries/ — verify it exists.
+if [[ ! -f "$DICT_DIR/libxml2.dict" ]]; then
+    echo "[-] STOP: Dictionary missing: $DICT_DIR/libxml2.dict"
+    echo "    Must come from libxml2/fuzz/xml.dict — see provenance audit."
+    exit 1
 fi
-if [[ -n "$DICT_SRC" ]]; then
-    cp "$DICT_SRC" "$DICT_DIR/libxml2.dict"
-    echo "[+] Dictionary copied from: $DICT_SRC"
-else
-    # Create minimal XML dictionary
-    cat > "$DICT_DIR/libxml2.dict" << 'DICTEOF'
-"<"
-">"
-"</"
-"/>"
-"<?"
-"?>"
-"<![CDATA["
-"]]>"
-"<!--"
-"-->"
-"&amp;"
-"&lt;"
-"&gt;"
-"&quot;"
-"xmlns"
-"encoding"
-"version"
-"UTF-8"
-"xml"
-DICTEOF
-    echo "[+] Dictionary: created minimal XML dictionary (FuzzBench dict not found)"
-fi
-echo "    Entries: $(wc -l < "$DICT_DIR/libxml2.dict")"
+echo "[+] Dictionary: $DICT_DIR/libxml2.dict ($(wc -l < "$DICT_DIR/libxml2.dict") entries from libxml2/fuzz/xml.dict)"
 
 # ── CVE definitions ───────────────────────────────────────────────────────
 # Format: NAME TAG CVE_ID DESCRIPTION
@@ -225,8 +192,11 @@ build_target() {
     echo "    libxml2.a: $(stat -c%s "$BUILD_DIR/install/lib/libxml2.a") bytes"
 
     # Link harness against this version's libxml2
+    # -include flags provide missing standard types (uint8_t, size_t) without
+    # modifying the FuzzBench harness source file — it stays byte-identical.
     mkdir -p "$OUT_DIR"
     AFL_USE_ASAN=1 "$CXX" $CXXFLAGS \
+        -include cstdint -include cstddef \
         -I"$BUILD_DIR/install/include/libxml2" \
         "$EXP_DIR/build/harness.cc" \
         "$BUILD_DIR/install/lib/libxml2.a" \
