@@ -60,7 +60,8 @@ echo ""
 # Compile mutator if needed
 if [[ ! -f "$MUTATOR_SO" ]] || [[ "$REPO_ROOT/src/mutator_telemetry.c" -nt "$MUTATOR_SO" ]]; then
     echo "[*] Compiling mutator_telemetry.c..."
-    clang -O2 -shared -fPIC -g \
+    PLAIN_CC=$(command -v clang-18 || command -v clang-16 || command -v clang)
+    "$PLAIN_CC" -O2 -shared -fPIC -g \
         -I "$AFL_ROOT/include" \
         -o "$MUTATOR_SO" \
         "$REPO_ROOT/src/mutator_telemetry.c" \
