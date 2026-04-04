@@ -956,7 +956,7 @@ def analysis_feature_importance(data, tel_dir, output_dir, bug_pairs, seeds):
                     "fixed_mean": float(np.mean(fixed_vals)),
                     "U_statistic": float(stat),
                     "p_value": float(pval),
-                    "significant_bonferroni": significant,
+                    "significant_bonferroni": bool(significant),
                     "A12": float(a12),
                     "effect_size": effect_label,
                     "direction": "buggy > fixed" if a12 > 0.5 else "fixed > buggy",
@@ -969,8 +969,13 @@ def analysis_feature_importance(data, tel_dir, output_dir, bug_pairs, seeds):
         results[pair] = pair_results
         n_sig = sum(1 for tp in pair_results["timepoints"].values()
                     for r in tp if r["significant_bonferroni"])
-        print(f"  {pair}: {n_sig} significant feature-timepoint combinations "
+        n_large = sum(1 for tp in pair_results["timepoints"].values()
+                      for r in tp if r["effect_size"] in ("large", "medium"))
+        print(f"  {pair}: {n_sig} Bonferroni-significant, {n_large} with medium/large effect size "
               f"(Bonferroni alpha={bonferroni_alpha:.6f})")
+        if n_sig == 0 and n_large > 0:
+            print(f"  NOTE: With only {len(buggy_seeds)} seeds, Bonferroni is very strict. "
+                  f"Ranking by effect size (A12) instead.")
 
     # Save report
     report_path = os.path.join(output_dir, "feature_importance_report.json")

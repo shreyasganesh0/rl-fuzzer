@@ -1,0 +1,220 @@
+{
+  "model_name": "m3_0",
+  "state_dim": 13,
+  "action_dim": 47,
+  "recommended_architecture": {
+    "hidden_layers": [128, 128, 64],
+    "activation": "relu",
+    "rationale": "dim=13 <= 20, matching M1_0/M1_1 architecture which showed best results in Experiment 2"
+  },
+  "recommended_algorithm": "dqn",
+  "algorithm_note": "DQN preferred over contextual bandit: the features below track cumulative state (edge heat, entropy) that evolves over time, making temporal credit assignment (gamma=0.99) valuable. Bandit should be tested as an ablation.",
+  "features": [
+    {
+      "index": 0,
+      "name": "total_edges_norm",
+      "description": "Total discovered edges, normalized by MAP_SIZE (65536)",
+      "source": "count of non-0xFF bytes in afl->virgin_bits",
+      "c_implementation": "count_coverage(afl) / 65536.0 — reuse existing count_coverage() from mutator_m0_0.c",
+      "normalization": "divide by 65536.0",
+      "shm_offset_bytes": 4,
+      "shm_format": "uint32",
+      "importance_rank": 1,
+      "mean_a12_dev": 0.389,
+      "rationale": "Strongest discriminator across both CVE pairs. Buggy versions consistently reach more edges because bug-adjacent code paths (overflow handlers, error branches) add reachable edges. An RL agent seeing total_edges can learn to favor mutations that push coverage into unexplored (potentially bug-adjacent) regions."
+    },
+    {
+      "index": 1,
+      "name": "cold_edges_norm",
+      "description": "Count of edges never hit (hit_count=0) in cumulative bitmap, normalized by MAP_SIZE",
+      "source": "MAP_SIZE - count of nonzero bytes in cumulative trace bitmap",
+      "c_implementation": "Track cumulative_map[65536] updated each step with max(cumulative_map[i], shm.map[i]). cold = MAP_SIZE - count_nonzero(cumulative_map)",
+      "normalization": "divide by 65536.0",
+      "shm_offset_bytes": 8,
+      "shm_format": "uint32",
+      "importance_rank": 2,
+      "mean_a12_dev": 0.267,
+      "rationale": "Inverse of total_edges but captures the frontier size — how much unexplored territory remains. Fixed versions have more cold edges (less reachable code). The agent can use this to gauge exploration progress and shift to exploitation when the frontier shrinks."
+    },
+    {
+      "index": 2,
+      "name": "hot_edges_norm",
+      "description": "Count of edges with hit_count > 128 in cumulative bitmap, normalized by total_edges",
+      "source": "Iterate cumulative_map, count entries > 128",
+      "c_implementation": "Loop over cumulative_map[0..65535], count where val > 128",
+      "normalization": "divide by max(total_edges, 1)",
+      "shm_offset_bytes": 12,
+      "shm_format": "uint32",
+      "importance_rank": 4,
+      "mean_a12_dev": 0.244,
+      "rationale": "Hot edges indicate heavily-exercised code paths (loops, frequently-called functions). Buggy versions develop more hot edges around vulnerability sites because ASAN instrumentation adds branches that get hit repeatedly. This is a proxy for 'how deep into the program are we exercising code' — exactly where bugs tend to be."
+    },
+    {
+      "index": 3,
+      "name": "warm_edges_norm",
+      "description": "Count of edges with hit_count 8-128, normalized by total_edges",
+      "source": "Iterate cumulative_map, count entries in [8, 128]",
+      "c_implementation": "Loop over cumulative_map, count where 8 <= val <= 128",
+      "normalization": "divide by max(total_edges, 1)",
+      "shm_offset_bytes": 16,
+      "shm_format": "uint32",
+      "importance_rank": 8,
+      "mean_a12_dev": 0.200,
+      "rationale": "Warm edges represent moderately-exercised paths — the 'middle layer' between surface code and deep paths. Changes in warm-to-hot transitions indicate the fuzzer is deepening its exploration into a code region. Buggy versions show different warm ratios because bug-adjacent branches shift the heat distribution."
+    },
+    {
+      "index": 4,
+      "name": "cool_edges_norm",
+      "description": "Count of edges with hit_count 1-7, normalized by total_edges",
+      "source": "Iterate cumulative_map, count entries in [1, 7]",
+      "c_implementation": "Loop over cumulative_map, count where 1 <= val <= 7",
+      "normalization": "divide by max(total_edges, 1)",
+      "shm_offset_bytes": 20,
+      "shm_format": "uint32",
+      "importance_rank": 5,
+      "mean_a12_dev": 0.233,
+      "rationale": "Cool edges are the coverage frontier — paths discovered but barely exercised. A high cool-edge ratio means the fuzzer is finding new paths but not deepening them. The agent should learn to shift mutations toward deepening cool edges (which may reach bug-adjacent code) rather than re-hitting hot paths."
+    },
+    {
+      "index": 5,
+      "name": "edge_entropy",
+      "description": "Shannon entropy of hit-count distribution over nonzero edges (8 power-of-2 bins)",
+      "source": "Bin nonzero cumulative_map values into [1,2,4,8,16,32,64,128+], compute H = -sum(p*log(p))",
+      "c_implementation": "Bin cumulative_map into 8 buckets, compute entropy. Max entropy = log2(8) = 3.0",
+      "normalization": "divide by 3.0 (max possible entropy with 8 bins)",
+      "shm_offset_bytes": 24,
+      "shm_format": "float32",
+      "importance_rank": 10,
+      "mean_a12_dev": 0.189,
+      "rationale": "Entropy measures coverage diversity — whether exploration is spread evenly across code regions or concentrated in a few paths. Buggy versions show entropy divergence because bug-adjacent code creates hotspots that reduce entropy. A low-entropy state signals the agent should try diversifying mutations to explore cold regions."
+    },
+    {
+      "index": 6,
+      "name": "edge_hit_mean",
+      "description": "Mean hit count over nonzero edges",
+      "source": "sum(cumulative_map[i] for nonzero i) / count_nonzero",
+      "c_implementation": "Accumulate sum and count of nonzero entries in cumulative_map",
+      "normalization": "divide by 255.0 (max possible hit count)",
+      "shm_offset_bytes": 28,
+      "shm_format": "float32",
+      "importance_rank": 7,
+      "mean_a12_dev": 0.211,
+      "rationale": "Mean hit count reflects execution depth — higher means the fuzzer is spending more time per edge. Different between buggy and fixed because bug paths create execution overhead (ASAN checks, error handlers). The agent can use this to detect when it's 'stuck' re-executing the same paths vs. exploring new ones."
+    },
+    {
+      "index": 7,
+      "name": "edge_hit_std",
+      "description": "Standard deviation of hit counts over nonzero edges",
+      "source": "sqrt(E[x^2] - E[x]^2) over nonzero cumulative_map entries",
+      "c_implementation": "Track sum and sum_of_squares of nonzero entries, compute std",
+      "normalization": "divide by 255.0",
+      "shm_offset_bytes": 32,
+      "shm_format": "float32",
+      "importance_rank": 9,
+      "mean_a12_dev": 0.200,
+      "rationale": "High std means some edges are hit very frequently while others are barely touched — uneven exploration. Buggy versions have higher std because vulnerability-adjacent code creates execution hotspots. The agent should learn that high std + high total_edges = bug-adjacent territory worth deepening."
+    },
+    {
+      "index": 8,
+      "name": "corpus_size_norm",
+      "description": "Number of entries in AFL++ queue, log-normalized",
+      "source": "afl->queued_items",
+      "c_implementation": "log1p(afl->queued_items) / log1p(10000.0)",
+      "normalization": "log1p / log1p(10000)",
+      "shm_offset_bytes": 36,
+      "shm_format": "uint32",
+      "importance_rank": 3,
+      "mean_a12_dev": 0.244,
+      "rationale": "Corpus size indicates how many interesting inputs the fuzzer has found. Buggy versions tend to accumulate more corpus entries because bug-adjacent inputs trigger new coverage. The rate of corpus growth is a signal for whether current mutations are productive."
+    },
+    {
+      "index": 9,
+      "name": "crashes_norm",
+      "description": "Total unique crashes found, log-normalized",
+      "source": "count of files in AFL++ crashes directory or afl->unique_crashes",
+      "c_implementation": "log1p(crashes) / log1p(1000.0)",
+      "normalization": "log1p / log1p(1000)",
+      "shm_offset_bytes": 40,
+      "shm_format": "uint32",
+      "importance_rank": 11,
+      "mean_a12_dev": 0.133,
+      "rationale": "Direct bug-finding signal. xml005_buggy produced 278 crashes, fixed produced 0 — the clearest differential. The agent should learn to intensify mutations that preceded crash discovery. Lower discriminative power because crashes are sparse and only present in buggy versions."
+    },
+    {
+      "index": 10,
+      "name": "new_edges_norm",
+      "description": "New edges discovered since last step",
+      "source": "total_edges[now] - total_edges[prev]",
+      "c_implementation": "coverage - prev_coverage (already computed in existing mutators)",
+      "normalization": "min(new_edges, 100) / 100.0",
+      "shm_offset_bytes": 44,
+      "shm_format": "uint32",
+      "importance_rank": 12,
+      "mean_a12_dev": 0.0,
+      "rationale": "Immediate coverage feedback — the reward signal. While not discriminative between buggy/fixed (both discover edges at similar per-step rates), this is essential for the RL agent to know whether its last action was productive. Included because it's the primary learning signal from Experiments 1-2."
+    },
+    {
+      "index": 11,
+      "name": "avg_exec_time_norm",
+      "description": "Average execution time in microseconds, log-normalized",
+      "source": "Track running average of per-execution time via timestamps",
+      "c_implementation": "Compute delta between consecutive timestamp_us readings, exponential moving average",
+      "normalization": "log1p(avg_us) / log1p(100000.0)",
+      "shm_offset_bytes": 48,
+      "shm_format": "float32",
+      "importance_rank": 6,
+      "mean_a12_dev": 0.222,
+      "rationale": "Execution time correlates with code path depth — deeper paths through complex parsing logic take longer. Buggy versions show systematically different execution times because ASAN instrumentation and bug-adjacent error handling add overhead. The agent can learn that slower executions indicate deeper/more interesting code paths worth re-exploring."
+    },
+    {
+      "index": 12,
+      "name": "coverage_velocity",
+      "description": "Rate of new edge discovery over last 1000 executions",
+      "source": "total_edges[now] - total_edges[1000 steps ago]) / 1000",
+      "c_implementation": "Ring buffer of last 1000 total_edges values. velocity = (current - ring[oldest]) / 1000",
+      "normalization": "divide by 0.1 (empirical max ~0.01 new edges per exec during active exploration)",
+      "shm_offset_bytes": 52,
+      "shm_format": "float32",
+      "importance_rank": 13,
+      "mean_a12_dev": 0.0,
+      "rationale": "Derivative of coverage — detects whether the fuzzer is in an active discovery phase or has saturated. Not discriminative between buggy/fixed in aggregate, but critical for the RL agent to know when to shift strategies: high velocity = keep exploring, low velocity = try different mutation types. This is the 'exploration vs exploitation' signal."
+    }
+  ],
+  "shm_layout": {
+    "total_bytes": 128,
+    "state_seq_offset": 0,
+    "state_seq_size": 4,
+    "feature_start_offset": 4,
+    "feature_format": "13 fields: 5 uint32 + 4 float32 + 3 uint32 + 1 float32 (56 bytes total)",
+    "action_seq_offset": 64,
+    "action_seq_size": 4,
+    "action_offset": 68,
+    "action_size": 4
+  },
+  "excluded_features": [
+    {
+      "name": "edge_hit_max",
+      "reason": "Zero discriminative power (A12=0.500 everywhere). Max hit count is dominated by a single hot edge and is too noisy to be useful."
+    },
+    {
+      "name": "edge_discovery_rate",
+      "reason": "Zero discriminative power. Per-interval discovery rate is identical between buggy and fixed — the versions differ in total coverage, not per-step rate."
+    }
+  ],
+  "generalization_rationale": "These features capture STRUCTURAL properties of code exploration (edge heat distribution, entropy, depth indicators) rather than target-specific coverage counts. A buggy version of ANY program will exhibit: (1) extra reachable edges near the vulnerability, (2) execution time anomalies from error-handling code, (3) coverage heat concentration around bug-adjacent paths. An agent trained on these features should transfer to unseen targets because the features describe HOW the fuzzer is exploring, not WHAT specific code it has reached.",
+  "data_source": {
+    "campaign_duration_hours": 9.7,
+    "total_execs_per_run": "33M-45M",
+    "coverage_status": "saturated (discovery rate < 3% of initial)",
+    "crashes": {
+      "xml005_buggy": 278,
+      "xml005_fixed": 0,
+      "xml017_buggy": 97,
+      "xml017_fixed": 87
+    },
+    "differential_signal": {
+      "xml005": "+238 edges buggy vs fixed (consistent across 3 seeds)",
+      "xml017": "+285 edges buggy vs fixed (consistent across 3 seeds)"
+    }
+  }
+}

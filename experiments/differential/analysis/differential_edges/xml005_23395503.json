@@ -1,0 +1,10 @@
+{
+  "total_execs": 23395503,
+  "buggy_total_edges": 5317,
+  "fixed_total_edges": 5053,
+  "buggy_only": 3342,
+  "fixed_only": 3078,
+  "shared": 1975,
+  "buggy_seeds_loaded": 1,
+  "fixed_seeds_loaded": 1
+}
