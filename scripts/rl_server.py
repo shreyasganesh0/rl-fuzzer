@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from models.common import (
     ACTION_COLUMNS, ACTION_SIZE, DEFAULT_TRAIN_STEPS,
-    PlateauDetector, DQNAgent, compute_reward,
+    PlateauDetector, DQNAgent, ContextualBanditAgent, compute_reward,
     create_shm, shm_write_action,
 )
 
@@ -31,7 +31,7 @@ def _format_milestone(step: int) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-id",    required=True,
-                    help="Model ID: m0_0, m1_0, m1_1, m2")
+                    help="Model ID: m0_0, m1_0, m1_1, m1_2, m2, m_star")
     ap.add_argument("--mode",        choices=["train", "eval"], default="train")
     ap.add_argument("--model",       default=None,
                     help="Checkpoint path (default: derived from model-id)")
@@ -46,6 +46,9 @@ def main():
     ap.add_argument("--milestones", default=None,
                     help="Comma-separated step counts for checkpoint copies "
                          "(e.g. 500000,1000000). Training only.")
+    ap.add_argument("--algorithm", choices=["dqn", "bandit"], default="dqn",
+                    help="Agent algorithm: dqn (Double DQN, default) or "
+                         "bandit (contextual bandit with Thompson sampling)")
     args = ap.parse_args()
 
     # Parse milestone step counts (training only)
@@ -71,9 +74,10 @@ def main():
           + ("  [no-plateau]" if args.no_plateau else ""))
 
     shm = create_shm(mod.SHM_PATH, mod.SHM_SIZE)
-    agent = DQNAgent(mod.STATE_SIZE, mod.HIDDEN_LAYERS, label,
-                     eval_mode=is_eval,
-                     decay_steps=int(args.train_steps * 0.6))
+    AgentClass = ContextualBanditAgent if args.algorithm == "bandit" else DQNAgent
+    agent = AgentClass(mod.STATE_SIZE, mod.HIDDEN_LAYERS, label,
+                       eval_mode=is_eval,
+                       decay_steps=int(args.train_steps * 0.6))
     agent.load(args.model)
     plateau = (PlateauDetector(grace_steps=int(args.train_steps * 0.7))
                if (not is_eval and not args.no_plateau) else None)

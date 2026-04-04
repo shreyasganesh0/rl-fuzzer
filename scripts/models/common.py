@@ -168,6 +168,97 @@ class DQNAgent:
         print(f"[+] {self._label} loaded {path}  (\u03b5={self.epsilon:.3f}, steps={self._total_steps})")
 
 
+class BanditNet(nn.Module):
+    """Two-head network for contextual bandit: outputs per-action mean + log-variance."""
+    def __init__(self, state_size, action_size, hidden_layers):
+        super().__init__()
+        layers = []
+        prev = state_size
+        for h in hidden_layers:
+            layers += [nn.Linear(prev, h), nn.ReLU()]
+            prev = h
+        self.trunk = nn.Sequential(*layers)
+        self.mean_head   = nn.Linear(prev, action_size)
+        self.logvar_head = nn.Linear(prev, action_size)
+
+    def forward(self, x):
+        h = self.trunk(x)
+        return self.mean_head(h), self.logvar_head(h)
+
+
+class ContextualBanditAgent:
+    """Neural contextual bandit with Thompson sampling.
+
+    Same interface as DQNAgent (select_action, remember, train_step, save, load)
+    so rl_server.py can use either agent transparently.
+    """
+
+    def __init__(self, state_size, hidden_layers, label,
+                 eval_mode=False, decay_steps=50_000):
+        self.eval_mode = eval_mode
+        self._label = label
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.net = BanditNet(state_size, ACTION_SIZE, hidden_layers).to(self.device)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=LEARNING_RATE)
+        self.epsilon = 0.0 if eval_mode else EPSILON_MIN  # minimal explore
+        self._total_steps = 0
+        self._infer_buf = torch.zeros(1, state_size, dtype=torch.float32,
+                                      device=self.device)
+        # Online training buffer (no replay — bandit trains on immediate feedback)
+        self._pending = None  # (state, action) awaiting reward
+
+    def select_action(self, state):
+        self._infer_buf[0] = torch.as_tensor(state, dtype=torch.float32)
+        with torch.no_grad():
+            mean, logvar = self.net(self._infer_buf)
+            if self.eval_mode:
+                return int(mean.argmax(1).item())
+            std = (logvar * 0.5).exp()
+            sample = mean + std * torch.randn_like(std)
+            return int(sample.argmax(1).item())
+
+    def remember(self, s, a, r, ns):
+        if self.eval_mode:
+            return
+        self._pending = (s, a, r)
+        self._total_steps += 1
+
+    def train_step(self):
+        if self.eval_mode or self._pending is None:
+            return 0.0
+        s, a, r = self._pending
+        self._pending = None
+        s_t = torch.FloatTensor(s).unsqueeze(0).to(self.device)
+        mean, logvar = self.net(s_t)
+        mu_a = mean[0, a]
+        lv_a = logvar[0, a]
+        var_a = lv_a.exp()
+        # Negative log-likelihood of observed reward under N(mu, var)
+        nll = 0.5 * (lv_a + (r - mu_a) ** 2 / (var_a + 1e-8))
+        loss = nll
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.net.parameters(), GRAD_CLIP)
+        self.optimizer.step()
+        return loss.item()
+
+    def save(self, path):
+        torch.save({"net": self.net.state_dict(),
+                     "optimizer": self.optimizer.state_dict(),
+                     "total_steps": self._total_steps}, path)
+        print(f"[+] {self._label} bandit saved → {path}")
+
+    def load(self, path):
+        if not os.path.exists(path):
+            print(f"[i] {self._label}: no checkpoint — fresh.")
+            return
+        ck = torch.load(path, map_location=self.device)
+        self.net.load_state_dict(ck["net"])
+        self.optimizer.load_state_dict(ck["optimizer"])
+        self._total_steps = ck.get("total_steps", 0)
+        print(f"[+] {self._label} bandit loaded {path}  (steps={self._total_steps})")
+
+
 def create_shm(shm_path, shm_size):
     fd = open(shm_path, "w+b"); fd.write(b"\x00" * shm_size); fd.flush()
     shm = mmap.mmap(fd.fileno(), shm_size); fd.close(); return shm

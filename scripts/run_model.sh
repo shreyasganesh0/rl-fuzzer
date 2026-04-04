@@ -31,6 +31,7 @@ EVAL_ONLY=0
 NO_PLATEAU=0
 EXP_DIR=""
 MILESTONES=""
+ALGORITHM=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --no-plateau)  NO_PLATEAU=1;     shift   ;;
         --exp-dir)     EXP_DIR="$2";     shift 2 ;;
         --milestones)  MILESTONES="$2";  shift 2 ;;
+        --algorithm)   ALGORITHM="$2";   shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -143,7 +145,8 @@ if [[ $EVAL_ONLY -eq 0 ]]; then
         --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
         --train-freq "$TRAIN_FREQ" \
         $( [[ $NO_PLATEAU -eq 1 ]] && echo "--no-plateau" ) \
-        $( [[ -n "$MILESTONES" ]] && echo "--milestones $MILESTONES" ) &
+        $( [[ -n "$MILESTONES" ]] && echo "--milestones $MILESTONES" ) \
+        $( [[ -n "$ALGORITHM" ]] && echo "--algorithm $ALGORITHM" ) &
     RL_PID=$!
     log "RL server PID $RL_PID"
     sleep 2
@@ -180,7 +183,8 @@ log "Seeding eval from original corpus: $EVAL_SEEDS"
     --model-id "$MODEL_ID" \
     --mode eval --model "$MODEL_PT" \
     --eval-steps "$EVAL_STEPS" --train-steps "$TRAIN_STEPS" --results-dir "$PLOTS_DIR" \
-    --train-freq "$TRAIN_FREQ" &
+    --train-freq "$TRAIN_FREQ" \
+    $( [[ -n "$ALGORITHM" ]] && echo "--algorithm $ALGORITHM" ) &
 RL_PID=$!
 log "RL eval server PID $RL_PID"
 sleep 2
