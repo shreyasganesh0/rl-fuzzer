@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# scripts/run_full_experiment.sh — Multi-benchmark, multi-milestone experiment
+# scripts/experiment2.sh  —  Multi-benchmark, multi-milestone experiment (10M steps)
 #
 # Runs all model×benchmark combinations with incremental eval: one continuous
 # 10M-step eval run, snapshotted at milestones via post-hoc CSV slicing.
 #
 # Usage:
-#   bash scripts/run_full_experiment.sh [OPTIONS]
+#   bash scripts/experiment2.sh [OPTIONS]
 #
 # Options:
 #   --benchmarks LIST   comma-separated (default: jsoncpp,freetype2,libxml2,re2,harfbuzz,libpng)

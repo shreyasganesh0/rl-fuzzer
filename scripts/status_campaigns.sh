@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# status_differential.sh — Check progress of running differential campaigns
+# status_campaigns.sh — Check progress of running telemetry/baseline campaigns
 set -euo pipefail
 
 TEL_DIR="${1:-$(cd "$(dirname "$0")/.." && pwd)/experiments/differential/telemetry}"

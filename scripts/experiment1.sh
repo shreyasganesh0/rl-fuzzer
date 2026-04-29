@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/run_experiment.sh
+# scripts/experiment1.sh  —  jsoncpp 500K, 4 RL models + optional baseline
 #
 # DESIGN: Train once, eval 5 times, compare averages.
 #
@@ -17,16 +17,16 @@
 #
 # USAGE:
 #   # Full experiment (~55 min on CPU):
-#   bash scripts/run_experiment.sh
+#   bash scripts/experiment1.sh
 #
 #   # Skip training, use existing checkpoints (~13 min):
-#   bash scripts/run_experiment.sh --skip-train
+#   bash scripts/experiment1.sh --skip-train
 #
 #   # With AFL++ baseline comparison:
-#   bash scripts/run_experiment.sh --run-baseline
+#   bash scripts/experiment1.sh --run-baseline
 #
 #   # Faster (3 eval runs, less statistical power):
-#   bash scripts/run_experiment.sh --skip-train --eval-runs 3
+#   bash scripts/experiment1.sh --skip-train --eval-runs 3
 
 set -euo pipefail
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# run_m3_0_experiment.sh — Full evaluation of M* model on differential targets
+# scripts/experiment3.sh  —  Differential-informed RL fuzzing (M3_0 vs M1_0 vs baseline)
 #
-# 1. Train M* on xml005_buggy for 500K steps (both DQN and bandit variants)
+# 1. Train M3_0 on xml005_buggy for 500K steps (both DQN and bandit variants)
 # 2. Evaluate on xml005_buggy (in-distribution) and xml017_buggy (transfer)
 # 3. Compare against vanilla AFL++ baseline and M1_0
 # 4. 5 eval runs per configuration for statistical significance
 #
 # Usage:
-#   bash scripts/run_m3_0_experiment.sh [--train-steps N] [--eval-steps N] [--eval-runs N]
+#   bash scripts/experiment3.sh [--train-steps N] [--eval-steps N] [--eval-runs N]
 
 set -euo pipefail
 
@@ -39,6 +39,7 @@ SEEDS="$EXP_DIR/seeds"
 DICT="$EXP_DIR/dictionaries/libxml2.dict"
 
 [[ -f "$TRAIN_BIN" ]] || { echo "[-] Training target not found: $TRAIN_BIN"; exit 1; }
+[[ -f "$DICT" ]]      || { echo "[-] Dictionary not found: $DICT"; exit 1; }
 
 echo "============================================"
 echo "  M* Differential Fuzzing Experiment"
@@ -71,6 +72,7 @@ run_model() {
         --eval-steps "$EVAL_STEPS" \
         --target "$TARGET_BIN" \
         --seeds "$SEEDS" \
+        --dict "$DICT" \
         --exp-dir "$RUN_DIR" \
         --no-plateau \
         $ALGO_FLAG \
