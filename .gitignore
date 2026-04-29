@@ -52,3 +52,13 @@ Thumbs.db
 experiments/differential/targets/*/target
 experiments/differential/targets/*/build_info.json
 
+# === Experiment outputs (large; regenerate via experiment*.sh) ===
+experiments/jsoncpp/
+experiments/summary/
+experiments/differential/results/
+experiments/differential/telemetry/
+experiments/*.log
+
+# LibreOffice / Office lock files
+.~lock.*#
+
