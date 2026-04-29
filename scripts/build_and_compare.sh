@@ -109,7 +109,7 @@ log_sep
 
 if [[ $COMPARE_ONLY -eq 0 ]]; then
     [[ -x "${AFL_DIR}/afl-fuzz" ]] || die "afl-fuzz not found at ${AFL_DIR}/afl-fuzz"
-    [[ -x "$TARGET" ]]             || die "target not found: $TARGET (run build_jsoncpp.sh first)"
+    [[ -x "$TARGET" ]]             || die "target not found: $TARGET (run build_benchmark.sh jsoncpp first)"
     [[ -d "$SEEDS" ]]              || die "seeds not found: $SEEDS"
 fi
 command -v "$PYTHON" >/dev/null || die "python3 not found"

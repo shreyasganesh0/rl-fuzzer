@@ -32,21 +32,23 @@ NO_PLATEAU=0
 EXP_DIR=""
 MILESTONES=""
 ALGORITHM=""
+DICT_OVERRIDE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model-id)    MODEL_ID="$2";    shift 2 ;;
-        --train-steps) TRAIN_STEPS="$2"; shift 2 ;;
-        --eval-steps)  EVAL_STEPS="$2";  shift 2 ;;
-        --afl-dir)     AFL_DIR="$2";     shift 2 ;;
-        --target)      TARGET="$2";      shift 2 ;;
-        --seeds)       SEEDS="$2";       shift 2 ;;
-        --no-build)    NO_BUILD=1;       shift   ;;
-        --eval-only)   EVAL_ONLY=1;      shift   ;;
-        --no-plateau)  NO_PLATEAU=1;     shift   ;;
-        --exp-dir)     EXP_DIR="$2";     shift 2 ;;
-        --milestones)  MILESTONES="$2";  shift 2 ;;
-        --algorithm)   ALGORITHM="$2";   shift 2 ;;
+        --model-id)    MODEL_ID="$2";       shift 2 ;;
+        --train-steps) TRAIN_STEPS="$2";    shift 2 ;;
+        --eval-steps)  EVAL_STEPS="$2";     shift 2 ;;
+        --afl-dir)     AFL_DIR="$2";        shift 2 ;;
+        --target)      TARGET="$2";         shift 2 ;;
+        --seeds)       SEEDS="$2";          shift 2 ;;
+        --dict)        DICT_OVERRIDE="$2";  shift 2 ;;
+        --no-build)    NO_BUILD=1;          shift   ;;
+        --eval-only)   EVAL_ONLY=1;         shift   ;;
+        --no-plateau)  NO_PLATEAU=1;        shift   ;;
+        --exp-dir)     EXP_DIR="$2";        shift 2 ;;
+        --milestones)  MILESTONES="$2";     shift 2 ;;
+        --algorithm)   ALGORITHM="$2";      shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -120,12 +122,13 @@ command -v "$PYTHON" >/dev/null || die "python3 not found"
 "$PYTHON" -c "import torch" 2>/dev/null || die "PyTorch not installed"
 
 # ── Dict flag ─────────────────────────────────────────────────────────────────
+DICT="${DICT_OVERRIDE:-${REPO_ROOT}/dictionaries/target.dict}"
 DICT_FLAG=""; [[ -f "$DICT" ]] && DICT_FLAG="-x $DICT"
 
 # ── Build mutator ─────────────────────────────────────────────────────────────
 if [[ $NO_BUILD -eq 0 ]]; then
     log "Compiling src/mutator_${BASE_MODEL_ID}.c → $MUTATOR_SO"
-    clang -O2 -march=native -ffast-math -shared -fPIC -I"${AFL_INC}" -lm \
+    ${CC:-clang-18} -O2 -march=native -ffast-math -shared -fPIC -I"${AFL_INC}" -lm \
         -o "$MUTATOR_SO" "${REPO_ROOT}/src/mutator_${BASE_MODEL_ID}.c"
     log "Mutator compiled OK"
 else
