@@ -1,126 +1,105 @@
-"""Model M3_0 — Differential-informed feature selection.
+"""Model M3_0 — Differential-informed coverage distribution features (13-dim).
 
-This is a PLACEHOLDER using M1_1's 13-dim state as a baseline.
-After running the differential analysis pipeline (Phase 3), regenerate
-this module from the m3_0_feature_spec.json produced by
-scripts/analysis/design_m3_0_features.py.
+State vector derived from differential analysis of buggy vs fixed libxml2.
+Features capture edge heat distribution, entropy, execution time, and
+coverage velocity — structural properties that generalise across targets.
 
-The actual M3_0 features will be determined by which telemetry features
-best discriminate buggy from fixed versions of the target program.
+SHM layout (128 bytes) must match src/mutator_m3_0.c.
 """
 
-import struct, math, json, os
+import struct, math
 import numpy as np
-from .common import MAX_COVERAGE, MAX_NEW_EDGES, MAX_CRASHES
 
-# ── Default config (placeholder — matches M1_1 for initial testing) ──────
 STATE_SIZE      = 13
-SHM_SIZE        = 256
+SHM_SIZE        = 128
 SHM_PATH        = "/tmp/rl_shm_m3_0"
 MODEL_PATH_DEFAULT = "rl_m3_0.pt"
 LABEL           = "M3_0"
 HIDDEN_LAYERS   = [128, 128, 64]
 
-_LOG_MAP_SIZE   = math.log1p(65536.0)
+# SHM offsets — must match mutator_m3_0.c
+STATE_SEQ_OFF    = 0
+TOTAL_EDGES_OFF  = 4
+COLD_EDGES_OFF   = 8
+HOT_EDGES_OFF    = 12
+WARM_EDGES_OFF   = 16
+COOL_EDGES_OFF   = 20
+ENTROPY_OFF      = 24
+HIT_MEAN_OFF     = 28
+HIT_STD_OFF      = 32
+CORPUS_SIZE_OFF  = 36
+CRASHES_OFF      = 40
+NEW_EDGES_OFF    = 44
+EXEC_TIME_OFF    = 48
+VELOCITY_OFF     = 52
+ACTION_SEQ_OFF   = 64
+ACTION_OFF       = 68
 
-# ── SHM offsets (matches M1_1 layout for placeholder) ────────────────────
-STATE_SEQ_OFF   = 0
-COVERAGE_OFF    = 4
-NEW_EDGES_OFF   = 8
-CRASHES_OFF     = 12
-TOTAL_EXECS_OFF = 24
-N_NZ_EN_OFF     = 32
-N_NZ_DIS_OFF    = 36
-MAX_EN_OFF      = 40
-MAX_DIS_OFF     = 44
-SUM_EN_OFF      = 48
-SUM_SQ_EN_OFF   = 56
-SUM_DIS_OFF     = 64
-SUM_SQ_DIS_OFF  = 72
-SUM_STAB_OFF    = 80
-TOTAL_EDGES_OFF = 84
+MAP_SIZE = 65536.0
 
-ACTION_SEQ_OFF  = 128
-ACTION_OFF      = 132
-
-CSV_EXTRA_HEADER = ",num_visited,stability"
-
-
-def _try_load_spec():
-    """Attempt to load feature spec from analysis output."""
-    spec_path = os.path.join(os.path.dirname(__file__), "..", "..",
-                             "experiments", "differential", "analysis",
-                             "m3_0_feature_spec.json")
-    if os.path.exists(spec_path):
-        with open(spec_path) as f:
-            return json.load(f)
-    return None
+CSV_EXTRA_HEADER = (",cold_edges,hot_edges,warm_edges,cool_edges,"
+                    "entropy,hit_mean,hit_std,corpus_size,exec_time,velocity")
 
 
 def shm_read(shm, shm_size):
     shm.seek(0); raw = shm.read(shm_size)
     return {
-        "state_seq":   struct.unpack_from("=I", raw, STATE_SEQ_OFF)[0],
-        "coverage":    struct.unpack_from("=I", raw, COVERAGE_OFF)[0],
-        "new_edges":   struct.unpack_from("=I", raw, NEW_EDGES_OFF)[0],
-        "crashes":     struct.unpack_from("=I", raw, CRASHES_OFF)[0],
-        "n_nz_en":     struct.unpack_from("=I", raw, N_NZ_EN_OFF)[0],
-        "n_nz_dis":    struct.unpack_from("=I", raw, N_NZ_DIS_OFF)[0],
-        "max_en":      struct.unpack_from("=I", raw, MAX_EN_OFF)[0],
-        "max_dis":     struct.unpack_from("=I", raw, MAX_DIS_OFF)[0],
-        "sum_en":      struct.unpack_from("=Q", raw, SUM_EN_OFF)[0],
-        "sum_sq_en":   struct.unpack_from("=Q", raw, SUM_SQ_EN_OFF)[0],
-        "sum_dis":     struct.unpack_from("=Q", raw, SUM_DIS_OFF)[0],
-        "sum_sq_dis":  struct.unpack_from("=Q", raw, SUM_SQ_DIS_OFF)[0],
-        "sum_stab":    struct.unpack_from("=f", raw, SUM_STAB_OFF)[0],
-        "num_visited": struct.unpack_from("=I", raw, TOTAL_EDGES_OFF)[0],
+        "state_seq":    struct.unpack_from("=I", raw, STATE_SEQ_OFF)[0],
+        "coverage":     struct.unpack_from("=I", raw, TOTAL_EDGES_OFF)[0],
+        "total_edges":  struct.unpack_from("=I", raw, TOTAL_EDGES_OFF)[0],
+        "cold_edges":   struct.unpack_from("=I", raw, COLD_EDGES_OFF)[0],
+        "hot_edges":    struct.unpack_from("=I", raw, HOT_EDGES_OFF)[0],
+        "warm_edges":   struct.unpack_from("=I", raw, WARM_EDGES_OFF)[0],
+        "cool_edges":   struct.unpack_from("=I", raw, COOL_EDGES_OFF)[0],
+        "entropy":      struct.unpack_from("=f", raw, ENTROPY_OFF)[0],
+        "hit_mean":     struct.unpack_from("=f", raw, HIT_MEAN_OFF)[0],
+        "hit_std":      struct.unpack_from("=f", raw, HIT_STD_OFF)[0],
+        "corpus_size":  struct.unpack_from("=I", raw, CORPUS_SIZE_OFF)[0],
+        "crashes":      struct.unpack_from("=I", raw, CRASHES_OFF)[0],
+        "new_edges":    struct.unpack_from("=I", raw, NEW_EDGES_OFF)[0],
+        "exec_time":    struct.unpack_from("=f", raw, EXEC_TIME_OFF)[0],
+        "velocity":     struct.unpack_from("=f", raw, VELOCITY_OFF)[0],
     }
 
 
 def build_state(d, train_steps):
-    nv = max(float(d["num_visited"]), 1.0)
-    S  = max(float(train_steps), 1.0)
-    me = d["sum_en"] / nv
-    md = d["sum_dis"] / nv
-    ve = max(0.0, d["sum_sq_en"] / nv - me ** 2)
-    vd = max(0.0, d["sum_sq_dis"] / nv - md ** 2)
-
+    te = max(float(d["total_edges"]), 1.0)
     return np.array([
-        d["coverage"]  / MAX_COVERAGE,
-        min(d["new_edges"], MAX_NEW_EDGES) / MAX_NEW_EDGES,
-        math.log1p(d["crashes"]) / math.log1p(MAX_CRASHES),
-        me            / S,
-        math.sqrt(ve) / S,
-        d["max_en"]   / S,
-        d["n_nz_en"]  / nv,
-        md            / S,
-        math.sqrt(vd) / S,
-        d["max_dis"]  / S,
-        d["n_nz_dis"] / nv,
-        d["sum_stab"] / nv,
-        math.log1p(float(d["num_visited"])) / _LOG_MAP_SIZE,
+        d["total_edges"] / MAP_SIZE,                              # 0: total_edges
+        d["cold_edges"] / MAP_SIZE,                               # 1: cold_edges
+        d["hot_edges"] / te,                                      # 2: hot ratio
+        d["warm_edges"] / te,                                     # 3: warm ratio
+        d["cool_edges"] / te,                                     # 4: cool ratio
+        d["entropy"],                                             # 5: pre-normed in C
+        d["hit_mean"],                                            # 6: pre-normed in C
+        d["hit_std"],                                             # 7: pre-normed in C
+        math.log1p(float(d["corpus_size"])) / math.log1p(10000), # 8: corpus_size
+        math.log1p(float(d["crashes"])) / math.log1p(1000),      # 9: crashes
+        min(float(d["new_edges"]), 100.0) / 100.0,               # 10: new_edges
+        d["exec_time"],                                           # 11: pre-normed in C
+        d["velocity"],                                            # 12: pre-normed in C
     ], dtype=np.float32)
 
 
 def zero_state_data():
-    return {"coverage": 0, "new_edges": 0, "crashes": 0,
-            "n_nz_en": 0, "n_nz_dis": 0, "max_en": 0, "max_dis": 0,
-            "sum_en": 0, "sum_sq_en": 0, "sum_dis": 0, "sum_sq_dis": 0,
-            "sum_stab": 0.0, "num_visited": 1}
+    return {"coverage": 0, "total_edges": 0, "cold_edges": 65536, "hot_edges": 0,
+            "warm_edges": 0, "cool_edges": 0, "entropy": 0.0,
+            "hit_mean": 0.0, "hit_std": 0.0, "corpus_size": 0,
+            "crashes": 0, "new_edges": 0, "exec_time": 0.0,
+            "velocity": 0.0}
 
 
 def csv_extra_fields(d, args):
-    nv  = d["num_visited"]
-    nv_f = max(float(nv), 1.0)
-    stb = d["sum_stab"] / nv_f
-    return f",{nv},{stb:.4f}"
+    return (f",{d['cold_edges']},{d['hot_edges']},{d['warm_edges']},"
+            f"{d['cool_edges']},{d['entropy']:.4f},{d['hit_mean']:.4f},"
+            f"{d['hit_std']:.4f},{d['corpus_size']},{d['exec_time']:.4f},"
+            f"{d['velocity']:.4f}")
 
 
 def log_extra(d, args):
-    nv  = d["num_visited"]
-    nv_f = max(float(nv), 1.0)
-    stb = d["sum_stab"] / nv_f
-    return f"visited={nv} stab={stb:.3f}"
+    return (f"hot={d['hot_edges']} warm={d['warm_edges']} "
+            f"cool={d['cool_edges']} ent={d['entropy']:.3f} "
+            f"vel={d['velocity']:.4f}")
 
 
 def exit_summary(d, step, cov, cr, epsilon, tag):
