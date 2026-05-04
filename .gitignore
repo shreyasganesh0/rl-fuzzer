@@ -4,6 +4,8 @@ bin/*.dylib
 bin/*.pt
 bin/*.o
 bin/*.out
+bin/target
+bin/target_bin
 *.dSYM/
 .vscode/
 
@@ -32,7 +34,11 @@ fuzzer_stats
 
 # === Generated Seeds & Dictionaries ===
 dictionaries/target.dict
+dictionaries/test.dict
 inputs/seed.txt
+
+# === Misc generated data files at repo root ===
+edgeDisablingMutator.csv
 
 # === Local dependency builds ===
 packages/xz/
