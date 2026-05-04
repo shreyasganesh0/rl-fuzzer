@@ -6,13 +6,13 @@ Given full 10M-step eval CSVs, slices them at each milestone step count and
 runs compare_metrics.py on the sliced data.
 
 Usage:
-  python3 scripts/slice_milestones.py \
+  python3 scripts/visuals/slice_milestones.py \
     --exp-dir experiments/jsoncpp \
     --milestones 500000,1000000,2000000,10000000 \
     --models m1_0,m1_1,m1_2
 
   # Query median elapsed_seconds at a milestone (for baseline timing)
-  python3 scripts/slice_milestones.py --query-time \
+  python3 scripts/visuals/slice_milestones.py --query-time \
     --exp-dir experiments/jsoncpp --milestone 10000000
 """
 
@@ -116,8 +116,8 @@ def get_elapsed_at_milestone(exp_dir: str, models: list, milestone: int,
 
 def run_comparison(milestone_dir: str, models: list, exp_dir: str):
     """Run compare_metrics.py on sliced CSVs in milestone_dir."""
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    compare_script = os.path.join(repo_root, "scripts", "compare_metrics.py")
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    compare_script = os.path.join(repo_root, "scripts", "visuals", "compare_metrics.py")
     python = os.path.join(repo_root, ".venv", "bin", "python3")
     if not os.path.isfile(python):
         python = "python3"

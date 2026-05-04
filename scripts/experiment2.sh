@@ -97,7 +97,7 @@ sep
 command -v "$PYTHON" >/dev/null || die "python3 not found"
 "$PYTHON" -c "import torch" 2>/dev/null || die "PyTorch not installed"
 [[ -f "${SCRIPTS}/run_model.sh" ]] || die "run_model.sh not found"
-[[ -f "${SCRIPTS}/slice_milestones.py" ]] || die "slice_milestones.py not found"
+[[ -f "${SCRIPTS}/visuals/slice_milestones.py" ]] || die "visuals/slice_milestones.py not found"
 
 # ── Helper: run baseline (adapted from build_and_compare.sh) ─────────────────
 run_baseline() {
@@ -301,7 +301,7 @@ for benchmark in "${BENCHMARK_LIST[@]}"; do
     sep
 
     # Find median RL eval time at max milestone
-    T_RL=$("$PYTHON" "${SCRIPTS}/slice_milestones.py" \
+    T_RL=$("$PYTHON" "${SCRIPTS}/visuals/slice_milestones.py" \
         --query-time \
         --exp-dir "$EXP_DIR" \
         --models "$MODELS" \
@@ -324,7 +324,7 @@ for benchmark in "${BENCHMARK_LIST[@]}"; do
     log "  Phase 4: Slicing milestones and running comparisons"
     sep
 
-    "$PYTHON" "${SCRIPTS}/slice_milestones.py" \
+    "$PYTHON" "${SCRIPTS}/visuals/slice_milestones.py" \
         --exp-dir    "$EXP_DIR" \
         --milestones "$MILESTONES" \
         --models     "$MODELS" \
@@ -342,7 +342,7 @@ sep
 log "  Generating cross-benchmark summary..."
 sep
 
-"$PYTHON" "${SCRIPTS}/summarize_benchmarks.py" \
+"$PYTHON" "${SCRIPTS}/visuals/summarize_benchmarks.py" \
     --exp-root   "$EXP_ROOT" \
     --benchmarks "$BENCHMARKS" \
     --models     "$MODELS" \

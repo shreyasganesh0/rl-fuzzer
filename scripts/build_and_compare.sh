@@ -273,7 +273,7 @@ if [[ -z "$COMPARE_ARGS" ]]; then
 fi
 
 # shellcheck disable=SC2086
-"$PYTHON" "${REPO_ROOT}/scripts/compare_metrics.py" \
+"$PYTHON" "${REPO_ROOT}/scripts/visuals/compare_metrics.py" \
     $COMPARE_ARGS \
     --out           "$COMPARE_DIR" \
     --phase         "$PHASE" \

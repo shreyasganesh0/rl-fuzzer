@@ -84,7 +84,7 @@ sep
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
 [[ -f "${SCRIPTS}/build_and_compare.sh" ]] || die "build_and_compare.sh not found"
-[[ -f "${SCRIPTS}/compare_metrics.py"  ]] || die "compare_metrics.py not found"
+[[ -f "${SCRIPTS}/visuals/compare_metrics.py"  ]] || die "visuals/compare_metrics.py not found"
 command -v "$PYTHON" >/dev/null             || die "python3 not found"
 "$PYTHON" -c "import torch" 2>/dev/null     || die "PyTorch not installed"
 
@@ -321,7 +321,7 @@ for model in "${MODEL_LIST[@]}"; do
 done
 [[ $RUN_BASELINE -eq 1 && -d "${REPO}/plots/baseline" ]] && \
     COMP_ARGS_STEPS+=(--baseline "${REPO}/plots/baseline")
-"$PYTHON" "${SCRIPTS}/compare_metrics.py" "${COMP_ARGS_STEPS[@]}" 2>&1 | tee -a "$LOG"
+"$PYTHON" "${SCRIPTS}/visuals/compare_metrics.py" "${COMP_ARGS_STEPS[@]}" 2>&1 | tee -a "$LOG"
 
 # ── PHASE 4b: Same-time comparison ────────────────────────────────────────────
 if [[ $RUN_BASELINE -eq 1 && -d "${REPO}/plots/baseline_time" ]]; then
@@ -337,7 +337,7 @@ if [[ $RUN_BASELINE -eq 1 && -d "${REPO}/plots/baseline_time" ]]; then
         [[ -d "${REPO}/plots/${model}" ]] && COMP_ARGS_TIME+=("$flag" "${REPO}/plots/${model}")
     done
     COMP_ARGS_TIME+=(--baseline "${REPO}/plots/baseline_time")
-    "$PYTHON" "${SCRIPTS}/compare_metrics.py" "${COMP_ARGS_TIME[@]}" 2>&1 | tee -a "$LOG"
+    "$PYTHON" "${SCRIPTS}/visuals/compare_metrics.py" "${COMP_ARGS_TIME[@]}" 2>&1 | tee -a "$LOG"
 fi
 
 sep

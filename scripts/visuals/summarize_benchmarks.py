@@ -9,7 +9,7 @@ Reads comparison_summary.json from each benchmark's milestone dirs and produces:
   - JSON output for programmatic access
 
 Usage:
-  python3 scripts/summarize_benchmarks.py \
+  python3 scripts/visuals/summarize_benchmarks.py \
     --exp-root experiments/ \
     --benchmarks jsoncpp,freetype2,libxml2,re2,harfbuzz,libpng \
     --models m1_0,m1_1,m1_2 \

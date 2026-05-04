@@ -356,12 +356,12 @@ def summarise(df, phase: str, run_dfs: list = None) -> dict:
             per_run_auc = []
             for rdf in run_dfs:
                 if "coverage" in rdf.columns and "elapsed_seconds" in rdf.columns and len(rdf) > 1:
-                    per_run_auc.append(float(np.trapz(rdf["coverage"], rdf["elapsed_seconds"])))
+                    per_run_auc.append(float(np.trapezoid(rdf["coverage"], rdf["elapsed_seconds"])))
             if per_run_auc:
                 s["coverage_auc"] = float(np.mean(per_run_auc))
                 s["coverage_auc_std"] = float(np.std(per_run_auc))
         else:
-            s["coverage_auc"] = float(np.trapz(df["coverage"], df["elapsed_seconds"]))
+            s["coverage_auc"] = float(np.trapezoid(df["coverage"], df["elapsed_seconds"]))
 
     s["total_steps"] = len(df)
     return s
@@ -440,7 +440,7 @@ def get_per_run_coverage_auc(data: dict, phase: str) -> list:
     for rdf in run_dfs:
         if ("coverage" in rdf.columns and "elapsed_seconds" in rdf.columns
                 and len(rdf) > 1):
-            vals.append(float(np.trapz(rdf["coverage"], rdf["elapsed_seconds"])))
+            vals.append(float(np.trapezoid(rdf["coverage"], rdf["elapsed_seconds"])))
     return vals
 
 
