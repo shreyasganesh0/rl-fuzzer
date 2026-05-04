@@ -1,6 +1,89 @@
-# Experiment 1: jsoncpp 500K Steps — Full Model Comparison
+# Experiment 1 — jsoncpp 500K Steps, Full Model Comparison
 
-## Overview
+Single target (jsoncpp), 5–8 RL models trained once and evaluated N times
+against the same checkpoint, optionally compared against a vanilla AFL++
+baseline in two flavours (same-steps and same-time).
+
+---
+
+## How to Run
+
+### Default invocation (full experiment, ~55 min)
+
+```bash
+bash scripts/experiment1.sh
+```
+
+Builds & trains all default models on `bin/target`, runs 5 eval rounds, and
+produces a same-steps comparison report at `comparison_results/same_steps/`.
+
+### Quick smoke test (~3 min)
+
+```bash
+bash scripts/build_benchmark.sh jsoncpp           # one-time target build
+bash scripts/experiment1.sh \
+    --models m0_0 \
+    --train-steps 2000 \
+    --eval-steps 1000 \
+    --eval-runs 2 \
+    --no-plateau \
+    --out comparison_results/smoke1
+```
+
+Validates: build → train → checkpoint → eval → CSV → compare. Confirm
+`comparison_results/smoke1/same_steps/comparison_report.txt` exists. Add
+`--run-baseline` to also smoke the baseline + same-time path.
+
+### Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--skip-train` | off | Reuse `bin/rl_<model>.pt` checkpoints; skips the ~10-min/model training phase. Verifies all checkpoints exist before starting. |
+| `--eval-runs N` | `5` | Total eval rounds. The first eval is harvested from the end of training (`run_1`); rounds 2..N are pure `--eval-only`. |
+| `--train-steps N` | `500000` | Per-model training step cap. |
+| `--eval-steps N` | `500000` | Per-eval-round step cap. |
+| `--models CSV` | `m0_0,m1_0,m1_1,m1_2,m2` | Subset of models. Add `_skip` variants (e.g. `m1_0,m1_0_skip`). |
+| `--run-baseline` | off | Adds vanilla AFL++ runs in two flavours: same-steps (`baseline/`) and same-time (`baseline_time/`) at the median RL eval wall-clock. |
+| `--no-plateau` | off | Disable plateau early-stopping in `rl_server.py`. |
+| `--compare-mode` | `steps` | Affects CSV output dir naming; the script always runs both same-steps and (if baseline enabled) same-time comparisons regardless. |
+| `--out DIR` | `comparison_results` | Where the final reports land. |
+
+### Phases
+
+1. **Phase 0** — clear `outputs_eval/` and `--out` dir. If not `--skip-train`, also clear `outputs/`, `plots/`, and old `bin/mutator_*.so`.
+2. **Phase 1** — training. Calls `build_and_compare.sh` without `--eval-only` so it does train + first eval; that first eval becomes `run_1`.
+3. **Phase 2** — N-1 (or N if `--skip-train`) more eval rounds, each preceded by `rm -rf outputs_eval/` to defeat `AFL_AUTORESUME` queue contamination.
+4. **Phase 2b** (if `--run-baseline`) — time-based baseline at median RL eval wall-clock.
+5. **Phase 3** — verification: counts CSV files per model.
+6. **Phase 4a/4b** — `scripts/visuals/compare_metrics.py` produces `comparison_report.txt` plus PNG plots.
+
+### `_skip` model variants
+
+The `_skip` variants of M0_0/M1_0/M1_1/M1_2/M2 are identical in state space
+and architecture to the originals but train every 4th step instead of every
+step (passed via `--train-freq 4` to `rl_server.py`). The DQN backprop is
+~1050 µs/step while action selection is ~50 µs/step; reducing training
+frequency drops amortised per-step cost from ~1290 µs to ~355 µs (≈3.6× RL
+server throughput) at the cost of slower learning. Useful for measuring the
+coverage impact of training-frequency tradeoffs against the originals and
+the plain AFL++ baseline.
+
+### Outputs
+
+| Path | Contents |
+|---|---|
+| `plots/<model>/run_N/rl_metrics_<model>_eval.csv` | Per-eval-run metrics CSV |
+| `plots/<model>/rl_metrics_<model>_train.csv` | Training metrics CSV |
+| `comparison_results/same_steps/comparison_report.txt` | Same-steps text report |
+| `comparison_results/same_time/comparison_report.txt` | Same-time text report (if baseline) |
+| `comparison_results/{same_steps,same_time}/plot_*.png` | Coverage, reward, action-distribution, throughput plots |
+| `comparison_results/experiment.log` | Master orchestrator log |
+
+---
+
+## Results
+
+### Overview
 
 | Property | Value |
 |----------|-------|
@@ -11,11 +94,11 @@
 | **Eval runs** | 5 per model (multi-run aggregation, mean ± std) |
 | **Models** | M0_0, M1_0, M1_1, M2 (standard) + skip variants (train freq=4) |
 | **Baselines** | Same-steps (500K execs), Same-time (203s = median RL eval time) |
-| **Script** | `scripts/build_and_compare.sh` → `scripts/run_experiment.sh` |
+| **Script** | `scripts/experiment1.sh` (orchestrator) → `scripts/build_and_compare.sh` → `scripts/run_model.sh` |
 | **Raw data** | Root-level `plots/`, `comparison_results/` |
 
 This was the first full experiment, run before the multi-benchmark framework
-(`run_full_experiment.sh`) and before M1_2 was implemented.
+(now `experiment2.sh`) and before M1_2 was implemented.
 
 ---
 
@@ -80,14 +163,14 @@ Each model evaluated 5 times at 500K steps with frozen policy (epsilon = 0.05).
 
 | Model | Dominant Action | % |
 |-------|----------------|---|
-| M0_0 | #36 HAVOC_MUT_ARITH32BE | 100.0% |
-| M1_0 | #15 DET_ARITH_SUB_FOUR_BIG | 53.7% |
-| M1_1 | #41 DICTIONARY_USER_EXTRAS_OVER | 100.0% |
-| M2 | #42 DICTIONARY_USER_EXTRAS_INSERT | 100.0% |
-| M0_0_skip | #2 DET_FLIP_FOUR_BITS | 100.0% |
-| M1_0_skip | #45 CUSTOM_MUTATOR | 41.8% |
-| M1_1_skip | #11 DET_ARITH_SUB_TWO_BIG | 86.7% |
-| M2_skip | #45 CUSTOM_MUTATOR | 100.0% |
+| M0_0 | #36 HAVOC_MUT_ARITH32BE | [100.0%](#3-policy-degeneration-is-the-core-problem) |
+| M1_0 | #15 DET_ARITH_SUB_FOUR_BIG | [53.7%](#3-policy-degeneration-is-the-core-problem) |
+| M1_1 | #41 DICTIONARY_USER_EXTRAS_OVER | [100.0%](#3-policy-degeneration-is-the-core-problem) |
+| M2 | #42 DICTIONARY_USER_EXTRAS_INSERT | [100.0%](#3-policy-degeneration-is-the-core-problem) |
+| M0_0_skip | #2 DET_FLIP_FOUR_BITS | [100.0%](#3-policy-degeneration-is-the-core-problem) |
+| M1_0_skip | #45 CUSTOM_MUTATOR | [41.8%](#3-policy-degeneration-is-the-core-problem) |
+| M1_1_skip | #11 DET_ARITH_SUB_TWO_BIG | [86.7%](#3-policy-degeneration-is-the-core-problem) |
+| M2_skip | #45 CUSTOM_MUTATOR | [100.0%](#3-policy-degeneration-is-the-core-problem) |
 
 Only M1_0 (53.7%) and M1_0_skip (41.8%) retained any action diversity at eval.
 All others collapsed to single-action policies.
@@ -158,8 +241,7 @@ action selection.
 
 ## Comparison with Experiment 2
 
-See [experiment_2_multi_benchmark_10m.md](experiment_2_multi_benchmark_10m.md)
-for the full multi-benchmark 10M-step experiment report.
+See [experiment_2.md](experiment_2.md) for the full multi-benchmark 10M-step experiment report.
 
 ---
 

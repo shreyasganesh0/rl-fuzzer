@@ -1,10 +1,108 @@
-# Experiment 3: Differential-Informed RL-Guided Fuzzing (M3_0)
-
-## Full Technical Report — Setup, Methodology, Results, and Analysis
+# Experiment 3 — Differential-Informed RL-Guided Fuzzing (M3_0)
 
 **Date**: April 4, 2026
 **Status**: Complete
 **Repository**: `rl-fuzzer/` (commit `3af5c72` and descendants)
+
+Differential-informed RL fuzzing. Trains M3_0 (DQN + bandit variants) and
+M1_0 on `xml005_buggy`, evaluates each plus an AFL++ baseline on
+`xml005_buggy` (in-distribution) and `xml017_buggy` (transfer). Fewer flags
+than the other two; many choices are hard-coded in the script.
+
+---
+
+## How to Run
+
+### Default invocation (~12 hours)
+
+```bash
+bash scripts/experiment3.sh
+```
+
+### Quick smoke test (~4 min)
+
+```bash
+# Prereq: differential targets must already be built. See "Prerequisites" below.
+bash scripts/experiment3.sh \
+    --train-steps 2000 \
+    --eval-steps 1000 \
+    --eval-runs 1
+```
+
+Validates: 3 trainings (DQN, bandit, M1_0) → 1 eval round × 2 targets ×
+4 variants. Check `experiments/differential/results/{m3_0_dqn,m3_0_bandit,m1_0_compare}/bin/rl_*.pt`
+exist and `experiments/differential/results/eval_xml005_buggy/{m3_0_dqn,m3_0_bandit,m1_0_compare,baseline}/run_1/`
+are populated.
+
+### Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--train-steps N` | `500000` | Per-model training cap. Same value passed to all three trainings. |
+| `--eval-steps N` | `500000` | Per-eval cap. Forwarded to `run_model.sh` and to `afl-fuzz -E` for the baseline. |
+| `--eval-runs N` | `5` | Eval repetitions per (target × variant). |
+
+### Hard-coded choices (edit the script to vary)
+
+| Setting | Value | Where |
+|---|---|---|
+| Train target | `xml005_buggy` | `experiment3.sh:24` |
+| Eval targets | `xml005_buggy`, `xml017_buggy` | `:103` |
+| Variants | `m3_0_dqn`, `m3_0_bandit`, `m1_0_compare` | `:116` |
+| Plateau early-stop | always disabled | `:77` (`--no-plateau` always forwarded) |
+| Baseline timeout | `EVAL_STEPS / 50 + 30` seconds | `:155` |
+
+### Prerequisites
+
+This script does **not** call `build_benchmark.sh`. It expects the libxml2
+differential targets to be pre-built:
+
+| Path | Contents |
+|---|---|
+| `experiments/differential/targets/xml005_buggy/target` | Pre-built libxml2 v2.9.4 with CVE-2017-5130 (integer overflow). |
+| `experiments/differential/targets/xml005_fixed/target` | Same library, fixed version. (Used by feature derivation, not by `experiment3.sh` itself.) |
+| `experiments/differential/targets/xml017_buggy/target` | Pre-built libxml2 v2.9.3 with CVE-2016-1762 (heap overread). |
+| `experiments/differential/targets/xml017_fixed/target` | Fixed v2.9.4. (Used by feature derivation.) |
+| `experiments/differential/dictionaries/libxml2.dict` | 89 entries from libxml2's `fuzz/xml.dict`. Already checked in. |
+| `experiments/differential/seeds/` | 38 XML files from libxml2's `test/` corpus. Already checked in. |
+
+If `xml017_buggy/target` is missing, the script logs and continues; the
+in-distribution eval (`xml005_buggy`) still runs.
+
+#### Building the libxml2 differential targets
+
+The recommended path is the automation script, which handles all four targets:
+
+```bash
+bash experiments/differential/build/build_libxml2_targets.sh           # ~15 min, ~600 MB of build artifacts
+bash experiments/differential/build/build_libxml2_targets.sh --clean   # force fresh clones
+```
+
+It clones libxml2 at the four required tags into `~/targets/libxml2_differential/`,
+builds each with AFL++ instrumentation + `AFL_USE_ASAN=1`, then writes the
+binaries into `experiments/differential/targets/<name>/target`.
+
+For reference, the per-target build is roughly:
+
+```bash
+# For each {xml005_buggy@v2.9.4, xml005_fixed@v2.9.5, xml017_buggy@v2.9.3, xml017_fixed@v2.9.4}:
+git clone --branch <tag> --depth 1 https://gitlab.gnome.org/GNOME/libxml2.git
+CC=afl-clang-fast CXX=afl-clang-fast++ AFL_USE_ASAN=1 \
+    ./autogen.sh --disable-shared --without-python --without-zlib --without-lzma
+make -j$(nproc)
+afl-clang-fast++ -fsanitize=address \
+    -include cstdint -include cstddef -I./include \
+    target.cc ./libxml2/.libs/libxml2.a -lz -llzma -o target
+```
+
+### Phases
+
+1. **Phase 1–3** (`experiment3.sh:82–100`) — three separate trainings (M3_0 DQN, M3_0 bandit, M1_0), each on `xml005_buggy`. Each writes to its own `<results>/<variant>/bin/rl_<model>.pt`.
+2. **Phase 4** (`:102–161`) — for each eval target, for each run, for each variant: copy the trained checkpoint into the per-run directory, run eval-only via `run_model.sh`. Then run an AFL++ baseline using `afl-fuzz -E $EVAL_STEPS`.
+
+---
+
+## Full Technical Report — Setup, Methodology, Results, and Analysis
 
 ---
 
@@ -22,8 +120,8 @@
 10. [Phase 5 — Training and Evaluation](#10-phase-5--training-and-evaluation)
 11. [Results](#11-results)
 12. [Analysis and Discussion](#12-analysis-and-discussion)
-13. [Reproducing This Experiment](#13-reproducing-this-experiment)
-14. [File Inventory](#14-file-inventory)
+13. [File Inventory](#13-file-inventory)
+14. [Appendix A — Static Analysis: Known Bugs in M3_0 Implementation](#appendix-a--static-analysis-known-bugs-in-m3_0-implementation)
 
 ---
 
@@ -45,10 +143,10 @@ The central challenge is **state representation**: what should the RL agent obse
 
 | Model | Dimensions | Features | Limitation |
 |-------|-----------|----------|------------|
-| M0_0 | 3 | coverage, new_edges, crashes | Too sparse — agent can't distinguish qualitatively different coverage states |
-| M1_0 | 12 | Edge stability distribution (enabled/disabled split, mean/std/max/density) | Features designed by intuition, not empirically validated |
-| M1_1 | 13 | Visited-edge tracking (per-edge hit counts, stability) | High overhead, features not proven to correlate with bug-finding |
-| M2 | 3+context | M0_0 + contextual bandit | Algorithm change, same sparse state |
+| M0_0 | 3 | coverage, new_edges, crashes | [Too sparse — agent can't distinguish qualitatively different coverage states](#22-the-differential-insight) |
+| M1_0 | 12 | Edge stability distribution (enabled/disabled split, mean/std/max/density) | [Features designed by intuition, not empirically validated](#22-the-differential-insight) |
+| M1_1 | 13 | Visited-edge tracking (per-edge hit counts, stability) | [High overhead, features not proven to correlate with bug-finding](#22-the-differential-insight) |
+| M2 | 3+context | M0_0 + contextual bandit | [Algorithm change, same sparse state](#22-the-differential-insight) |
 
 All prior models share a fundamental weakness: their features were designed by human intuition about what *should* matter, without empirical evidence that these features actually distinguish productive from unproductive fuzzing states.
 
@@ -209,8 +307,8 @@ Two CVEs were selected from the Magma benchmark's libxml2 entries, chosen to spa
 
 | ID | CVE | Class | Location | Mechanism |
 |----|-----|-------|----------|-----------|
-| xml005 | CVE-2017-5130 | Integer overflow | `xmlmemory.c:xmlMemStrdupLoc()` | `strlen(str) + 1` overflows for crafted large strings; `malloc(RESERVE_SIZE + size)` allocates undersized buffer |
-| xml017 | CVE-2016-1762 | Heap buffer overread | `parserInternals.c:xmlNextChar()` | UTF-8 multi-byte sequence parsing jumps into handler without validating remaining buffer length |
+| xml005 | CVE-2017-5130 | [Integer overflow](#mutation-effectiveness) | `xmlmemory.c:xmlMemStrdupLoc()` | [`strlen(str) + 1` overflows for crafted large strings; `malloc(RESERVE_SIZE + size)` allocates undersized buffer](#63-static-bug-verification) |
+| xml017 | CVE-2016-1762 | [Heap buffer overread](#mutation-effectiveness) | `parserInternals.c:xmlNextChar()` | [UTF-8 multi-byte sequence parsing jumps into handler without validating remaining buffer length](#63-static-bug-verification) |
 
 **Why these two CVEs?**
 - Different vulnerability classes test whether differential features capture general structural properties vs. bug-specific patterns
@@ -325,16 +423,17 @@ This design isolates the data collection from any learning effects — we observ
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | Targets | 4 (xml005_buggy/fixed, xml017_buggy/fixed) | 2 CVEs × 2 versions |
-| Seeds per target | 3 (random selection from 38-file corpus) | Statistical replication |
+| Seeds per target | 3 (random selection from 38-file corpus) | [Statistical replication — see "Why 3 seeds?"](#why-3-seeds) |
 | Telemetry runs | 12 (4 targets × 3 seeds) | Full factorial design |
 | Baseline runs | 12 (identical config, no custom mutator) | Control group |
 | Total runs | 24 | |
-| Duration | ~9.7 hours per run | Until coverage saturation |
+| Duration | ~9.7 hours per run | [Until coverage saturation](#73-saturation-criterion) |
 | Total executions | 33–45 million per run | Varies by target complexity |
 | Log interval | Every 1,000 executions | Coverage dynamics CSV |
 | Snapshot interval | Every 10,000 executions | Full bitmap dumps |
 | Total data generated | ~3.4 GB | ~40,000 snapshots + CSVs |
 
+<a id="why-3-seeds"></a>
 **Why 3 seeds?** This is the minimum for computing variance estimates. With n=3, Mann-Whitney U has a minimum achievable p-value of 0.05, which means nothing can pass Bonferroni correction (α/65 ≈ 0.00077). This is a known limitation, addressed by using effect size (A12) rather than p-values for feature ranking.
 
 ### 7.3 Saturation Criterion
@@ -354,7 +453,10 @@ Campaigns ran until coverage saturation: the point where the edge discovery rate
 
 ### 8.1 Analysis Pipeline
 
-The analysis script (`scripts/analysis/differential_analysis.py`) performs 6 stages:
+The differential analysis (originally `scripts/analysis/differential_analysis.py`,
+removed from the tree after the M3_0 feature spec was finalised — the
+resulting `experiments/differential/analysis/m3_0_feature_spec.json` is now
+the authoritative output) performed 6 stages:
 
 1. **Data loading**: Parse all 12 coverage_dynamics CSVs, 12 mutation_attribution CSVs, and ~40,000 bitmap snapshots into a hierarchical structure: `{cve_pair → {buggy/fixed → {seed → {coverage/mutation: DataFrame}}}}`
 
@@ -434,19 +536,19 @@ Candidate features were ranked by mean A12 deviation across all 5 timepoints and
 
 | Rank | Feature | Mean A12 Dev | Category | Rationale |
 |------|---------|-------------|----------|-----------|
-| 1 | `total_edges` | 0.389 | Coverage | Strongest discriminator — buggy versions consistently reach more edges |
-| 2 | `cold_edges` | 0.267 | Frontier | Unreached code (MAP_SIZE - total_edges). Fixed versions have more frontier remaining |
+| 1 | `total_edges` | 0.389 | Coverage | [Strongest discriminator — buggy versions consistently reach more edges](#coverage-divergence) |
+| 2 | `cold_edges` | 0.267 | Frontier | [Unreached code (MAP_SIZE - total_edges). Fixed versions have more frontier remaining](#87-redundancy-analysis) |
 | 3 | `corpus_size` | 0.244 | Productivity | Number of "interesting" inputs discovered. More edges → more queue entries |
-| 4 | `hot_edges` | 0.244 | Heat | Concentration of heavily-exercised code changes with bug presence |
-| 5 | `cool_edges` | 0.233 | Heat | Lightly-touched edges — the discovery frontier within reached code |
-| 6 | `avg_exec_time` | 0.222 | Timing | Bug-adjacent code creates execution time anomalies (extra error handling paths) |
+| 4 | `hot_edges` | 0.244 | Heat | [Concentration of heavily-exercised code changes with bug presence](#86-generalization-argument) |
+| 5 | `cool_edges` | 0.233 | Heat | [Lightly-touched edges — the discovery frontier within reached code](#86-generalization-argument) |
+| 6 | `avg_exec_time` | 0.222 | Timing | [Bug-adjacent code creates execution time anomalies (extra error handling paths)](#86-generalization-argument) |
 | 7 | `edge_hit_mean` | 0.211 | Depth | Average execution depth across all reached edges |
-| 8 | `warm_edges` | 0.200 | Heat | Transition zone between hot and cool — moderately exercised branches |
-| 9 | `edge_hit_std` | 0.200 | Distribution | Variance of hit counts — how "peaked" vs "flat" the execution profile is |
-| 10 | `edge_entropy` | 0.189 | Distribution | Shannon entropy — compact summary of coverage distribution shape |
-| 11 | `crashes` | 0.133 | Reward | Direct bug signal, but noisy (xml017) and sparse |
-| 12 | `new_edges` | 0.0 | Reward | No discriminative power (identical per-step rates), but essential as immediate RL feedback |
-| 13 | `coverage_velocity` | 0.0 | Temporal | No discriminative power, but provides exploration-vs-exploitation signal over time |
+| 8 | `warm_edges` | 0.200 | Heat | [Transition zone between hot and cool — moderately exercised branches](#86-generalization-argument) |
+| 9 | `edge_hit_std` | 0.200 | Distribution | [Variance of hit counts — how "peaked" vs "flat" the execution profile is](#86-generalization-argument) |
+| 10 | `edge_entropy` | 0.189 | Distribution | [Shannon entropy — compact summary of coverage distribution shape](#86-generalization-argument) |
+| 11 | `crashes` | 0.133 | Reward | [Direct bug signal, but noisy (xml017) and sparse](#crash-differential) |
+| 12 | `new_edges` | 0.0 | Reward | [No discriminative power (identical per-step rates), but essential as immediate RL feedback](#85-why-include-zero-discriminative-features) |
+| 13 | `coverage_velocity` | 0.0 | Temporal | [No discriminative power, but provides exploration-vs-exploitation signal over time](#85-why-include-zero-discriminative-features) |
 
 **Excluded features** (A12 = 0.5 everywhere, no effect):
 - `edge_hit_max`: Dominated by a single hot loop edge, same across buggy/fixed
@@ -634,19 +736,21 @@ The experiment trains three model variants on `xml005_buggy` and evaluates them 
 
 | Variant | Model | Algorithm | Training Target | Training Steps |
 |---------|-------|-----------|----------------|---------------|
-| M3_0 DQN | M3_0 (13-dim differential) | Double DQN | xml005_buggy | 500,000 |
-| M3_0 Bandit | M3_0 (13-dim differential) | Contextual Bandit (Thompson) | xml005_buggy | 500,000 |
-| M1_0 | M1_0 (12-dim edge stability) | Double DQN | xml005_buggy | 500,000 |
+| M3_0 DQN | M3_0 (13-dim differential) | [Double DQN](#93-neural-network-architecture) | xml005_buggy | 500,000 |
+| M3_0 Bandit | M3_0 (13-dim differential) | [Contextual Bandit (Thompson)](#93-neural-network-architecture) — see also [§12.4 Bandit Underperformance](#124-bandit-underperformance) | xml005_buggy | 500,000 |
+| M1_0 | M1_0 (12-dim edge stability) | [Double DQN](#93-neural-network-architecture) | xml005_buggy | 500,000 |
 
 | Evaluation Target | Purpose | Runs per Variant |
 |-------------------|---------|-----------------|
-| xml005_buggy | In-distribution (same target as training) | 5 |
-| xml017_buggy | Transfer (different CVE, same codebase) | 5 |
+| xml005_buggy | In-distribution (same target as training) | [5](#why-5-runs) |
+| xml017_buggy | [Transfer (different CVE, same codebase)](#86-generalization-argument) | [5](#why-5-runs) |
 
 A **vanilla AFL++ baseline** (no custom mutator, no RL) is also run 5 times on each evaluation target.
 
+<a id="why-5-runs"></a>
 **Why 5 runs?** Fuzzing has inherent randomness (random seed selection, mutation randomness). Five runs provide enough samples to compute meaningful means and standard deviations for comparison, while keeping total compute time manageable (~12 hours total).
 
+<a id="why-no-plateau"></a>
 **Why `--no-plateau`?** The plateau detector (which stops training early when coverage saturates) is disabled to ensure all variants train for exactly 500K steps, making the comparison fair.
 
 ### 10.2 Training Configuration
@@ -791,56 +895,7 @@ The results suggest a clear path forward:
 
 ---
 
-## 13. Reproducing This Experiment
-
-### 13.1 Full Reproduction (All Phases)
-
-```bash
-# Phase 0: Prerequisites
-# Install AFL++, FuzzBench, Python venv with PyTorch, clang-18
-
-# Phase 1: Build targets
-cd experiments/differential
-bash build/build_libxml2_targets.sh
-
-# Phase 2: Telemetry collection (~10 hours)
-bash run_differential_campaigns.sh --duration 36000
-
-# Phase 3: Analysis
-python3 scripts/analysis/differential_analysis.py \
-    --telemetry-dir experiments/differential/telemetry \
-    --output-dir experiments/differential/analysis
-
-# Phase 4: M3_0 implementation (already done in src/mutator_m3_0.c + scripts/models/m3_0.py)
-
-# Phase 5: Train + Evaluate (~12 hours)
-bash scripts/run_m3_0_experiment.sh --train-steps 500000 --eval-steps 500000 --eval-runs 5
-```
-
-### 13.2 Evaluation Only (Using Saved Checkpoints)
-
-```bash
-# Reuse trained models from experiments/differential/results/
-# Copy checkpoints and run eval-only:
-bash scripts/run_model.sh \
-    --model-id m3_0 \
-    --eval-only \
-    --target experiments/differential/targets/xml017_buggy/target \
-    --seeds experiments/differential/seeds \
-    --exp-dir /path/to/eval/output \
-    --algorithm dqn
-```
-
-### 13.3 Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AFL_ROOT` | `~/packages/AFLplusplus` | Path to AFL++ installation |
-| `CC` | `clang-18` | C compiler for mutator compilation |
-
----
-
-## 14. File Inventory
+## 13. File Inventory
 
 ### Source Code
 
@@ -854,25 +909,7 @@ bash scripts/run_model.sh \
 | `scripts/models/common.py` | ~350 | DQN agent, Bandit agent, replay buffer, reward |
 | `scripts/rl_server.py` | ~200 | Unified RL training/eval server |
 | `scripts/run_model.sh` | ~220 | Train+eval pipeline for any model |
-| `scripts/run_m3_0_experiment.sh` | ~175 | Full M3_0 experiment orchestration |
-
-### Documentation
-
-| File | Description |
-|------|-------------|
-| `docs/differential_fuzzing_experiment_plan.md` | Master experiment plan (Phases 0–4) |
-| `docs/m3_0_feature_derivation.md` | Feature selection rationale with data tables |
-| `docs/experiment_3_verification_and_next_steps.md` | Implementation specification |
-| `docs/experiment_3_full_report.md` | This document |
-
-### Analysis Outputs
-
-| File | Description |
-|------|-------------|
-| `experiments/differential/analysis/m3_0_feature_spec.json` | Authoritative 13-feature JSON spec |
-| `experiments/differential/analysis/feature_importance_report.json` | Raw Mann-Whitney U / A12 results |
-| `experiments/differential/analysis/summary.md` | Divergence points, top mutations, feature rankings |
-| `experiments/differential/analysis/ANALYSIS_METHODOLOGY.md` | Statistical methods documentation |
+| `scripts/experiment3.sh` | ~175 | Full M3_0 experiment orchestration |
 
 ### Data
 
@@ -892,6 +929,24 @@ bash scripts/run_model.sh \
 | `experiments/differential/results/m1_0_compare/` | M1_0 training outputs + checkpoint |
 | `experiments/differential/results/eval_xml005_buggy/` | 5 eval runs × 4 variants |
 | `experiments/differential/results/eval_xml017_buggy/` | 5 eval runs × 4 variants |
+
+---
+
+## Appendix A — Static Analysis: Known Bugs in M3_0 Implementation
+
+Code audit findings for `src/mutator_m3_0.c`, `scripts/models/m3_0.py`,
+`scripts/rl_server.py`, `scripts/models/common.py`, and `scripts/run_model.sh`.
+
+| # | Severity | Location | Description | Status |
+|---|----------|----------|-------------|--------|
+| 1 | CRITICAL | `mutator_m3_0.c:157` | `count_coverage` reads `afl->total_bitmap_size` (an accumulator that grows with each calibrated queue entry — ~6.8 MB at scale), not the 64 KB `virgin_bits` size. Loop overreads ~6.8 MB past the buffer. Has not crashed because the adjacent `virgin_*` buffers are also `0xFF`-initialised. **Fix**: use `afl->fsrv.map_size`. | Fix |
+| 2 | HIGH | `mutator_m3_0.c:501` | `HAVOC_STACK_POW2` inherits AFL++'s default `4` (≤32 stacked ops) but the telemetry mutator used to derive features defines it as `9` (≤512 stacked ops). The agent learned Q-values for action 46 under telemetry semantics but executes a much milder variant at runtime. | Fix |
+| 3 | INFO | `mutator_m3_0.c:209,214` | Hot/entropy boundary off-by-one at `v=128` (warm by heat count, hot bin by entropy). Identical between telemetry and m3_0, so derivation and inference agree. | Leave (consistent) |
+| 4 | LOW | `mutator_m3_0.c:224` | `cold_edges` uses scan size `sz` instead of `MAP_SIZE`. Combined with #1, also fix to use `fsrv.map_size`. | Fix with #1 |
+| 5 | LOW | `common.py:203` | Bandit `epsilon` field is cosmetic — Thompson sampling never reads it. Field is logged to CSV implying 5% exploration; misleading but harmless. | Leave |
+| 6 | MEDIUM | `mutator_m3_0.c:157,186` | `total_edges` (from `virgin_bits`) and heat features (from `cumulative_map`) count different edge sets: AFL++ updates `virgin_bits` during queue calibration which doesn't go through `afl_custom_fuzz`. Divergence is typically ≤ a few hundred edges. | Leave (design) |
+| 7 | LOW | `experiment3.sh:39` | No dictionary existence guard. Missing dict silently runs RL without `-x`; baseline errors are redirected to `afl.log`. | Fix |
+| 8 | COSMETIC | `run_model.sh:193` | `AFL_AUTORESUME=1` set on a freshly-wiped eval directory. No effect; misleading. | Leave |
 
 ---
 
