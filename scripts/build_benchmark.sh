@@ -74,8 +74,8 @@ if [[ -d "$LOCAL_PREFIX" ]]; then
     export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib64:${LD_LIBRARY_PATH:-}"
 fi
 
-# Ensure meson is available (installed in .venv via pip)
-if [[ -x "${RL_FUZZER}/.venv/bin/meson" ]]; then
+# Pick up build tools installed into .venv via pip (meson, cmake, ninja, ...)
+if [[ -d "${RL_FUZZER}/.venv/bin" ]]; then
     export PATH="${RL_FUZZER}/.venv/bin:${PATH}"
 fi
 
@@ -141,6 +141,18 @@ if [[ -d "$LOCAL_PREFIX" ]]; then
     CFLAGS="$CFLAGS -I${LOCAL_PREFIX}/include"
     CXXFLAGS="$CXXFLAGS -I${LOCAL_PREFIX}/include"
     LDFLAGS="-L${LOCAL_PREFIX}/lib -L${LOCAL_PREFIX}/lib64"
+fi
+# afl-clang-fast++ wraps clang++; on systems without libstdc++-dev installed
+# (only libstdc++.so.6 present, no unversioned libstdc++.so), clang's link
+# step fails with "cannot find -lstdc++". If we detect a gcc install dir with
+# the stdc++ symlink, point clang at it via --gcc-install-dir.
+if ! echo 'int main(){return 0;}' | "$CXX" -x c++ - -o /dev/null 2>/dev/null; then
+    GCC_LIBDIR=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/libstdc++.so 2>/dev/null | head -1 | xargs -r dirname)
+    if [[ -n "$GCC_LIBDIR" ]]; then
+        CXXFLAGS="$CXXFLAGS --gcc-install-dir=$GCC_LIBDIR"
+        LDFLAGS="$LDFLAGS --gcc-install-dir=$GCC_LIBDIR"
+        echo "[*] libstdc++.so missing on system search path — adding --gcc-install-dir=$GCC_LIBDIR"
+    fi
 fi
 AFLDRIVER="$AFL_ROOT/libAFLDriver.a"
 
