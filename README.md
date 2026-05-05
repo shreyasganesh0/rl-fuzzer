@@ -166,8 +166,9 @@ Build any FuzzBench benchmark target (`jsoncpp`, `freetype2`, `libxml2`,
 bash scripts/build_benchmark.sh jsoncpp        # or any other recipe name
 ```
 
-The driver clones the project source into `~/targets/<project>/src` at the
-FuzzBench-pinned commit, builds with AFL++ instrumentation, and writes:
+The driver clones the project source into `$TARGETS_DIR/<project>/src`
+(default `~/targets/<project>/src`; override with `export TARGETS_DIR=...`) at
+the FuzzBench-pinned commit, builds with AFL++ instrumentation, and writes:
 `bin/target` (instrumented binary), `dictionaries/target.dict`, and seeds
 into `inputs/`. See [`docs/experiment_2.md#building-benchmark-targets-scriptsbuild_benchmarksh`](docs/experiment_2.md#building-benchmark-targets-scriptsbuild_benchmarksh)
 for the recipe contract and per-benchmark quirks.

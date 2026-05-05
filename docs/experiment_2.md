@@ -93,7 +93,7 @@ wrappers, copying seeds and dictionary, and smoke-testing the binary.
 | `$AFL_ROOT/afl-clang-fast++` | `~/packages/AFLplusplus` | AFL-instrumented C++ compiler. Build AFL++ from source if missing. |
 | `$AFL_ROOT/libAFLDriver.a` | same | libFuzzer-compatible driver providing `main()`. Built via `cd $AFL_ROOT && make libAFLDriver.a`. |
 | `$FUZZBENCH` | `~/fuzzbench` | Source of pinned commit (`benchmark.yaml`) and harness (`benchmarks/<name>/target.cc`). Clone from `github.com/google/fuzzbench`. |
-| `~/targets/<project>/src/` | (created lazily) | Where the project source is cloned. The driver only re-clones if `.git` is missing. |
+| `$TARGETS_DIR/<project>/src/` | `~/targets/<project>/src/` (created lazily) | Where the project source is cloned. Override with `export TARGETS_DIR=...`. The driver only re-clones if `.git` is missing. |
 | `packages/local/` (optional) | repo-local | Headers/libs added to `CFLAGS`/`LDFLAGS`/`PKG_CONFIG_PATH` if present. Use for dependencies you can't install with sudo. |
 | `.venv/bin/meson` (optional) | repo-local | Auto-added to `PATH` if present. Required for meson benchmarks (freetype2, harfbuzz). |
 
@@ -104,7 +104,7 @@ A recipe is a sourced shell file. The driver requires four things:
 | Element | Meaning |
 |---|---|
 | `FUZZBENCH_NAME=...` | Lookup key under `$FUZZBENCH/benchmarks/`. Drives commit pinning, harness path, and (if present) seed corpus. |
-| `GIT_URL=...` | Where to clone the project. Cloned to `~/targets/<basename>/src`. |
+| `GIT_URL=...` | Where to clone the project. Cloned to `$TARGETS_DIR/<basename>/src` (default `~/targets/<basename>/src`). |
 | `BUILD_STEPS()` | Function producing a static library at a known location. The driver doesn't link inside this — it just expects something usable to exist when the function returns. |
 | `LINK_STEPS()` | Function that links the static lib + harness + `$AFLDRIVER` into `$RL_FUZZER/bin/target`. |
 
