@@ -118,7 +118,7 @@ overridden with environment variables.
 |---|---|---|---|
 | **AFL++** (built from source) | `~/packages/AFLplusplus` | `$AFL_ROOT` | Must be built including `libAFLDriver.a`. |
 | **FuzzBench** clone | `~/fuzzbench` | `$FUZZBENCH` | Source of pinned commits and harnesses for each benchmark recipe. |
-| **Benchmark sources** | `~/targets/<project>/src` | (auto-managed) | `build_benchmark.sh` clones each project here at the FuzzBench-pinned commit on first build. |
+| **Benchmark sources** | `~/targets/<project>/src` | `$TARGETS_DIR` | `build_benchmark.sh` clones each project under `$TARGETS_DIR/<project>/src` at the FuzzBench-pinned commit on first build. |
 
 System packages (Debian/Ubuntu names): `build-essential g++ libstdc++-dev git clang-18 zlib1g-dev liblzma-dev autoconf automake libtool pkg-config`.
 

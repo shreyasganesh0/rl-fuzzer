@@ -63,6 +63,7 @@ RECIPE="${RL_FUZZER}/benchmarks/${BENCHMARK}/build_recipe.sh"
 
 AFL_ROOT="${AFL_ROOT:-$HOME/packages/AFLplusplus}"
 FUZZBENCH="${FUZZBENCH:-$HOME/fuzzbench}"
+TARGETS_DIR="${TARGETS_DIR:-$HOME/targets}"
 
 # ── Local packages (built from source when system packages unavailable) ──────
 LOCAL_PREFIX="${RL_FUZZER}/packages/local"
@@ -174,7 +175,7 @@ BENCHMARK_DIR="$FUZZBENCH/benchmarks/$FUZZBENCH_NAME"
 
 # Derive project name from GIT_URL
 PROJECT="$(basename "$GIT_URL" .git)"
-TARGET_DIR="$HOME/targets/${PROJECT}"
+TARGET_DIR="${TARGETS_DIR}/${PROJECT}"
 SRC_DIR="${TARGET_DIR}/src"
 
 # ── Read FuzzBench-pinned commit ──────────────────────────────────────────────
